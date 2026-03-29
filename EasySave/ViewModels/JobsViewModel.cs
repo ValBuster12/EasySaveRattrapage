@@ -515,32 +515,41 @@ public partial class JobsViewModel : ViewModelBase
         if (!_runtimeRegistry.TryGetJobItem(request.JobId, out var jobItem) || jobItem == null)
             return BuildCommandResult(request, CommandResultStatus.Rejected, "Job not found on host.");
 
+        var job = jobItem.Job;
+
+        if (request.Command == CommandType.Pause && (job.WasStopped || job.IsPaused()))
+            return BuildCommandResult(request, CommandResultStatus.Rejected,
+                job.IsPaused() ? "Job is already paused." : "Cannot pause: job is not running.");
+        if (request.Command == CommandType.Resume && !job.IsPaused())
+            return BuildCommandResult(request, CommandResultStatus.Rejected, "Cannot resume: job is not paused.");
+        if (request.Command == CommandType.Stop && job.WasStopped)
+            return BuildCommandResult(request, CommandResultStatus.Rejected, "Cannot stop: job is not running.");
+        if (request.Command == CommandType.Start && !job.WasStopped)
+            return BuildCommandResult(request, CommandResultStatus.Rejected, "Cannot start: job is already running.");
+
         try
         {
-            await Dispatcher.UIThread.InvokeAsync(async () =>
+            switch (request.Command)
             {
-                switch (request.Command)
-                {
-                    case CommandType.Pause:
-                        jobItem.PauseForRemoteCommand();
-                        break;
-                    case CommandType.Resume:
-                        jobItem.ResumeForRemoteCommand();
-                        break;
-                    case CommandType.Stop:
-                        jobItem.StopForRemoteCommand();
-                        break;
-                    case CommandType.Start:
-                        await jobItem.StartForRemoteCommandAsync();
-                        break;
-                    default:
-                        throw new ArgumentOutOfRangeException();
-                }
-            });
+                case CommandType.Pause:
+                    await Dispatcher.UIThread.InvokeAsync(jobItem.PauseForRemoteCommand);
+                    break;
+                case CommandType.Resume:
+                    await Dispatcher.UIThread.InvokeAsync(jobItem.ResumeForRemoteCommand);
+                    break;
+                case CommandType.Stop:
+                    await Dispatcher.UIThread.InvokeAsync(jobItem.StopForRemoteCommand);
+                    break;
+                case CommandType.Start:
+                    _ = Task.Run(jobItem.StartForRemoteCommandAsync);
+                    break;
+                default:
+                    return BuildCommandResult(request, CommandResultStatus.Rejected, "Unsupported command.");
+            }
         }
         catch (Exception ex)
         {
-            return BuildCommandResult(request, CommandResultStatus.Failed, ex.Message);
+            return BuildCommandResult(request, CommandResultStatus.Failed, $"Command failed: {ex.Message}");
         }
 
         return BuildCommandResult(request, CommandResultStatus.Executed, "Command applied on host.");

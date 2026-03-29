@@ -1,4 +1,5 @@
 using EasySave.Models.Backup.Execution;
+using EasySave.Data.Configuration;
 using EasySave.Models.Logger;
 using EasySave.Protocol.Messages;
 using EasySave.Protocol.Transport;
@@ -21,7 +22,7 @@ public sealed class BackupHostCommunicationService : IBackupHostCommunicationSer
     private readonly NetworkLog _networkLog;
 
     public BackupHostCommunicationService()
-        : this(Environment.MachineName, $"{Environment.MachineName}-{Environment.ProcessId}", NetworkLog.Instance)
+        : this(BuildHostName(), BuildInstanceId(), NetworkLog.Instance)
     {
     }
 
@@ -183,4 +184,19 @@ public sealed class BackupHostCommunicationService : IBackupHostCommunicationSer
     }
 
     public string InstanceId => _instanceId;
+
+    private static string BuildHostName()
+    {
+        var configured = ApplicationConfiguration.Load().EasySaveHostDisplayName;
+        return string.IsNullOrWhiteSpace(configured) ? Environment.MachineName : configured.Trim();
+    }
+
+    private static string BuildInstanceId()
+    {
+        var config = ApplicationConfiguration.Load();
+        var label = string.IsNullOrWhiteSpace(config.EasySaveHostInstanceLabel)
+            ? Environment.ProcessId.ToString()
+            : config.EasySaveHostInstanceLabel.Trim();
+        return $"{Environment.MachineName}-{label}";
+    }
 }
