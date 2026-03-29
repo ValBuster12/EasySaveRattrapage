@@ -159,7 +159,8 @@ public static class Server
         var registration = ProtocolSerializer.DeserializePayload<HostRegistrationMessage>(envelope);
         if (registration is null || string.IsNullOrWhiteSpace(registration.InstanceId))
         {
-            return SendErrorAsync(session.Channel, ProtocolParticipantIds.Broker, "INVALID_HOST_REGISTRATION", "Invalid host registration payload.", envelope.MessageId, cancellationToken);
+            await SendErrorAsync(session.Channel, ProtocolParticipantIds.Broker, "INVALID_HOST_REGISTRATION", "Invalid host registration payload.", envelope.MessageId, cancellationToken);
+            return;
         }
 
         session.Role = ProtocolClientKind.EasySaveHost;
@@ -258,6 +259,12 @@ public static class Server
         }
 
         var instanceId = hostSession.InstanceId;
+        if (string.IsNullOrWhiteSpace(instanceId))
+        {
+            LogError($"Relay denied: missing host instance id for connection {hostSession.ConnectionId}");
+            return;
+        }
+
         var targetRemotes = SessionsByConnectionId.Values
             .Where(s => RemoteSubscriptions.TryGetValue(s.ConnectionId, out var subscribed)
                         && BrokerRoutingPolicy.IsSubscribedRemote(s.Role, subscribed, instanceId))
@@ -283,7 +290,7 @@ public static class Server
         CancellationToken cancellationToken)
     {
         var request = ProtocolSerializer.DeserializePayload<CommandRequestMessage>(envelope);
-        if (!BrokerRoutingPolicy.CanRelayRemoteCommand(remoteSession.Role, request))
+        if (!BrokerRoutingPolicy.CanRelayRemoteCommand(remoteSession.Role, request) || request is null)
         {
             await SendErrorAsync(remoteSession.Channel, ProtocolParticipantIds.Broker, "INVALID_COMMAND_REQUEST", "Invalid command request payload.", envelope.MessageId, cancellationToken);
             return;
