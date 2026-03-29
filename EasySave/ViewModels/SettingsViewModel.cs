@@ -33,6 +33,8 @@ public partial class SettingsViewModel : ViewModelBase
     [ObservableProperty] private string _routingIp = ApplicationConfiguration.Load().EasySaveServerIp;
     [ObservableProperty] private string _routingPort = ApplicationConfiguration.Load().EasySaveServerPort.ToString();
     [ObservableProperty] private RoutingType _selectedRoutingType = ApplicationConfiguration.Load().RoutingType;
+    [ObservableProperty] private string _hostDisplayName = ApplicationConfiguration.Load().EasySaveHostDisplayName;
+    [ObservableProperty] private string _hostInstanceLabel = ApplicationConfiguration.Load().EasySaveHostInstanceLabel;
 
     /// <summary>
     ///     Initializes a new instance of the <see cref="SettingsViewModel" /> class.
@@ -163,7 +165,7 @@ public partial class SettingsViewModel : ViewModelBase
         {
             ApplicationConfiguration.Load().EasySaveServerIp = value;
             if (ApplicationConfiguration.Load().RoutingType != RoutingType.Local)
-                new Thread(() => NetworkLog.Instance.CreateSocket()).Start();
+                Task.Run(NetworkLog.Instance.CreateSocket);
         }
     }
 
@@ -177,7 +179,7 @@ public partial class SettingsViewModel : ViewModelBase
         {
             ApplicationConfiguration.Load().EasySaveServerPort = int.Parse(value);
             if (ApplicationConfiguration.Load().RoutingType != RoutingType.Local)
-                new Thread(() => NetworkLog.Instance.CreateSocket()).Start();
+                Task.Run(NetworkLog.Instance.CreateSocket);
         }
         catch
         {
@@ -200,6 +202,19 @@ public partial class SettingsViewModel : ViewModelBase
     partial void OnSelectedRoutingTypeChanged(RoutingType value)
     {
         ApplicationConfiguration.Load().RoutingType = value;
-        if (value != RoutingType.Local) new Thread(() => NetworkLog.Instance.CreateSocket()).Start();
+        if (value != RoutingType.Local)
+            Task.Run(NetworkLog.Instance.CreateSocket);
+        else
+            NetworkLog.Instance.CloseSocket();
+    }
+
+    partial void OnHostDisplayNameChanged(string value)
+    {
+        ApplicationConfiguration.Load().EasySaveHostDisplayName = value;
+    }
+
+    partial void OnHostInstanceLabelChanged(string value)
+    {
+        ApplicationConfiguration.Load().EasySaveHostInstanceLabel = value;
     }
 }

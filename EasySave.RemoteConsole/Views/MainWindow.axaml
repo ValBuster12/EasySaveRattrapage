@@ -21,14 +21,16 @@
       </Grid>
     </Border>
 
-    <Grid Grid.Row="1" ColumnDefinitions="Auto,160,Auto,90,Auto,220,Auto,Auto" ColumnSpacing="10">
+    <Grid Grid.Row="1" ColumnDefinitions="Auto,160,Auto,90,Auto,190,Auto,220,Auto,Auto" ColumnSpacing="10">
       <TextBlock Text="Server IP" VerticalAlignment="Center" />
       <TextBox Grid.Column="1" Text="{Binding ServerIp}" />
       <TextBlock Grid.Column="2" Text="Port" VerticalAlignment="Center" />
       <NumericUpDown Grid.Column="3" Minimum="1" Maximum="65535" Value="{Binding ServerPort}"/>
-      <TextBlock Grid.Column="4" Text="Selected Host" VerticalAlignment="Center" />
-      <TextBox Grid.Column="5" Text="{Binding SelectedHostInstanceId}" Watermark="host-instance-id" />
-      <Button Grid.Column="6" Content="Subscribe" Command="{Binding SelectHostCommand}" IsEnabled="{Binding CanSelectHost}" />
+      <TextBlock Grid.Column="4" Text="Console name" VerticalAlignment="Center" />
+      <TextBox Grid.Column="5" Text="{Binding DisplayName}" Watermark="optional" />
+      <TextBlock Grid.Column="6" Text="Selected Host" VerticalAlignment="Center" />
+      <TextBox Grid.Column="7" Text="{Binding SelectedHostInstanceId}" Watermark="host-instance-id" />
+      <Button Grid.Column="8" Content="Subscribe" Command="{Binding SelectHostCommand}" IsEnabled="{Binding CanSelectHost}" />
     </Grid>
 
     <Grid Grid.Row="2" ColumnDefinitions="320,*" ColumnSpacing="12">

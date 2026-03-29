@@ -10,17 +10,24 @@ namespace EasySave.RemoteConsole.ViewModels;
 public partial class MainWindowViewModel : ViewModelBase
 {
     private readonly IRemoteConsoleClientService _clientService;
+    private readonly RemoteConsoleConfiguration _configuration;
 
-    [ObservableProperty] private string _serverIp = "127.0.0.1";
-    [ObservableProperty] private int _serverPort = 5000;
+    [ObservableProperty] private string _serverIp;
+    [ObservableProperty] private int _serverPort;
     [ObservableProperty] private string _connectionState = "Disconnected";
-    [ObservableProperty] private string _selectedHostInstanceId = string.Empty;
+    [ObservableProperty] private string _selectedHostInstanceId;
+    [ObservableProperty] private string _displayName;
     [ObservableProperty] private string _feedbackMessage = "Ready.";
     [ObservableProperty] private bool _isConnected;
 
     public MainWindowViewModel(IRemoteConsoleClientService clientService)
     {
         _clientService = clientService;
+        _configuration = RemoteConsoleConfiguration.Load();
+        _serverIp = _configuration.ServerIp;
+        _serverPort = _configuration.ServerPort;
+        _selectedHostInstanceId = _configuration.SelectedHostInstanceId;
+        _displayName = _configuration.DisplayName;
         Hosts = new ObservableCollection<HostInstanceItemViewModel>();
         Jobs = new ObservableCollection<RemoteJobItemViewModel>();
 
@@ -190,7 +197,8 @@ public partial class MainWindowViewModel : ViewModelBase
 
             var job = FindOrCreateJob(message.JobId, message.JobName);
             job.ApplyCommandResult(message);
-            FeedbackMessage = $"{message.Command} for '{message.JobName}': {message.Status}.";
+            var details = string.IsNullOrWhiteSpace(message.Message) ? string.Empty : $" {message.Message}";
+            FeedbackMessage = $"{message.Command} for '{message.JobName}': {message.Status}.{details}";
         });
     }
 
@@ -239,6 +247,26 @@ public partial class MainWindowViewModel : ViewModelBase
 
     partial void OnSelectedHostInstanceIdChanged(string value)
     {
+        _configuration.SelectedHostInstanceId = value;
+        _configuration.Save();
         OnPropertyChanged(nameof(SelectedHostLabel));
+    }
+
+    partial void OnServerIpChanged(string value)
+    {
+        _configuration.ServerIp = value;
+        _configuration.Save();
+    }
+
+    partial void OnServerPortChanged(int value)
+    {
+        _configuration.ServerPort = value;
+        _configuration.Save();
+    }
+
+    partial void OnDisplayNameChanged(string value)
+    {
+        _configuration.DisplayName = value;
+        _configuration.Save();
     }
 }

@@ -23,6 +23,9 @@ public sealed class NetworkLog
     private readonly object _sync = new();
     private readonly object _sendSync = new();
     private ProtocolMessageChannel? _channel;
+    private bool _manualClose;
+    private CancellationTokenSource? _reconnectCts;
+    private Task? _reconnectTask;
     private CancellationTokenSource? _receiveLoopCts;
     private Task? _receiveLoopTask;
     private TcpClient? _tcpClient;
@@ -50,6 +53,7 @@ public sealed class NetworkLog
 
     public void CreateSocket()
     {
+        _manualClose = false;
         lock (_sync)
         {
             CloseSocketCore(raiseDisconnect: false);
@@ -65,6 +69,7 @@ public sealed class NetworkLog
                 _channel = new ProtocolMessageChannel(_tcpClient.GetStream());
                 _receiveLoopCts = new CancellationTokenSource();
                 _receiveLoopTask = Task.Run(() => ReceiveLoopAsync(_receiveLoopCts.Token));
+                CancelReconnectLoop();
 
                 OnConnect?.Invoke(this, EventArgs.Empty);
                 Console.WriteLine("Socket created and ready to use.");
@@ -73,14 +78,17 @@ public sealed class NetworkLog
             {
                 Console.WriteLine($"Error creating socket: {ex.Message}");
                 CloseSocketCore(raiseDisconnect: true);
+                StartReconnectLoop();
             }
         }
     }
 
     public void CloseSocket()
     {
+        _manualClose = true;
         lock (_sync)
         {
+            CancelReconnectLoop();
             CloseSocketCore(raiseDisconnect: true);
         }
     }
@@ -187,7 +195,58 @@ public sealed class NetworkLog
             {
                 CloseSocketCore(raiseDisconnect: true);
             }
+
+            StartReconnectLoop();
         }
+    }
+
+    private void StartReconnectLoop()
+    {
+        if (_manualClose || ApplicationConfiguration.Load().RoutingType == RoutingType.Local)
+            return;
+
+        lock (_sync)
+        {
+            if (_reconnectTask is { IsCompleted: false })
+                return;
+
+            _reconnectCts?.Dispose();
+            _reconnectCts = new CancellationTokenSource();
+            var token = _reconnectCts.Token;
+
+            _reconnectTask = Task.Run(async () =>
+            {
+                while (!token.IsCancellationRequested)
+                {
+                    try
+                    {
+                        await Task.Delay(TimeSpan.FromSeconds(3), token);
+                        if (IsConnected)
+                            return;
+
+                        CreateSocket();
+                        if (IsConnected)
+                            return;
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        return;
+                    }
+                    catch
+                    {
+                        // Keep retrying until cancellation.
+                    }
+                }
+            }, token);
+        }
+    }
+
+    private void CancelReconnectLoop()
+    {
+        _reconnectCts?.Cancel();
+        _reconnectCts?.Dispose();
+        _reconnectCts = null;
+        _reconnectTask = null;
     }
 
     private void CloseSocketCore(bool raiseDisconnect)

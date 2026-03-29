@@ -183,6 +183,34 @@ public sealed class ApplicationConfiguration
     } = RoutingType.Local;
 
     /// <summary>
+    ///     Gets or sets the optional host display name advertised to remote consoles.
+    ///     Falls back to machine name when empty. Automatically saves when modified.
+    /// </summary>
+    public string EasySaveHostDisplayName
+    {
+        get;
+        set
+        {
+            field = value?.Trim() ?? string.Empty;
+            Save();
+        }
+    } = string.Empty;
+
+    /// <summary>
+    ///     Gets or sets the optional host instance label used to build a stable instance identifier.
+    ///     Falls back to process id when empty. Automatically saves when modified.
+    /// </summary>
+    public string EasySaveHostInstanceLabel
+    {
+        get;
+        set
+        {
+            field = value?.Trim() ?? string.Empty;
+            Save();
+        }
+    } = string.Empty;
+
+    /// <summary>
     ///     Gets or sets the configuration file path. Not serialized.
     ///     Default is "appsettings.json".
     /// </summary>
@@ -258,4 +286,3 @@ public sealed class ApplicationConfiguration
         }
     }
 }
-

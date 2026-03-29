@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
+using System.Text.Json;
 using EasySave.Protocol.Messages;
 using EasySave.Protocol.Transport;
 
@@ -27,11 +28,11 @@ public static class Server
 
     public static async Task Main(string[] args)
     {
-        var (ipAddress, port) = ParseStartupConfiguration(args);
+        var (ipAddress, port, routingMode) = ParseStartupConfiguration(args);
         using var listener = new TcpListener(ipAddress, port);
         listener.Start();
 
-        LogInfo($"Broker started on {ipAddress}:{port}");
+        LogInfo($"Broker started on {ipAddress}:{port} (routing={routingMode})");
 
         using var cts = new CancellationTokenSource();
         Console.CancelKeyPress += (_, eventArgs) =>
@@ -377,15 +378,26 @@ public static class Server
         await channel.SendAsync(envelope, cancellationToken);
     }
 
-    private static (IPAddress ipAddress, int port) ParseStartupConfiguration(string[] args)
+    private static (IPAddress ipAddress, int port, string routingMode) ParseStartupConfiguration(string[] args)
     {
-        var ip = GetArgument(args, "--ip") ?? Environment.GetEnvironmentVariable("EASYSAVE_SERVER_IP");
-        var portValue = GetArgument(args, "--port") ?? Environment.GetEnvironmentVariable("EASYSAVE_SERVER_PORT");
+        var fileConfig = ServerConfiguration.Load();
+
+        var ip = GetArgument(args, "--ip")
+                 ?? Environment.GetEnvironmentVariable("EASYSAVE_SERVER_IP")
+                 ?? fileConfig.ServerIp;
+        var portValue = GetArgument(args, "--port")
+                        ?? Environment.GetEnvironmentVariable("EASYSAVE_SERVER_PORT")
+                        ?? fileConfig.ServerPort.ToString();
+        var routingMode = GetArgument(args, "--routing")
+                          ?? Environment.GetEnvironmentVariable("EASYSAVE_SERVER_ROUTING_MODE")
+                          ?? fileConfig.RoutingMode;
 
         var ipAddress = IPAddress.TryParse(ip, out var parsedIp) ? parsedIp : DefaultIp;
         var port = int.TryParse(portValue, out var parsedPort) ? parsedPort : DefaultPort;
+        if (port <= 0 || port > 65535)
+            port = DefaultPort;
 
-        return (ipAddress, port);
+        return (ipAddress, port, string.IsNullOrWhiteSpace(routingMode) ? "broker" : routingMode.Trim());
     }
 
     private static string? GetArgument(string[] args, string key)
@@ -432,4 +444,35 @@ public static class Server
     }
 
     private sealed record HostSession(HostRegistrationMessage Registration, Guid ConnectionId, ClientSession Session);
+
+    private sealed class ServerConfiguration
+    {
+        private const string ConfigFileName = "server.settings.json";
+
+        public string ServerIp { get; init; } = "0.0.0.0";
+        public int ServerPort { get; init; } = DefaultPort;
+        public string RoutingMode { get; init; } = "broker";
+
+        public static ServerConfiguration Load()
+        {
+            var path = Path.Combine(AppContext.BaseDirectory, ConfigFileName);
+            if (!File.Exists(path))
+            {
+                var defaults = new ServerConfiguration();
+                var json = JsonSerializer.Serialize(defaults, new JsonSerializerOptions { WriteIndented = true });
+                File.WriteAllText(path, json);
+                return defaults;
+            }
+
+            try
+            {
+                var json = File.ReadAllText(path);
+                return JsonSerializer.Deserialize<ServerConfiguration>(json) ?? new ServerConfiguration();
+            }
+            catch
+            {
+                return new ServerConfiguration();
+            }
+        }
+    }
 }

@@ -111,9 +111,12 @@ public sealed class RemoteConsoleClientService : IRemoteConsoleClientService
         if (!IsConnected || _channel is null)
             return;
 
+        var config = RemoteConsoleConfiguration.Load();
+        var displayName = string.IsNullOrWhiteSpace(config.DisplayName) ? Environment.MachineName : config.DisplayName.Trim();
+
         var registration = new RemoteConsoleRegistrationMessage(
             _consoleId,
-            Environment.MachineName,
+            displayName,
             typeof(RemoteConsoleClientService).Assembly.GetName().Version?.ToString() ?? "unknown",
             DateTimeOffset.UtcNow,
             DateTimeOffset.UtcNow,
