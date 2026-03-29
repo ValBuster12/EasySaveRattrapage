@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using EasySave.Protocol.Messages;
 
@@ -14,16 +15,19 @@ public static class ProtocolSerializer
     };
 
     public static ProtocolEnvelope CreateEnvelope<TPayload>(
-        string type,
+        string messageType,
         string senderId,
         TPayload payload,
         Guid? correlationId = null,
         DateTimeOffset? timestampUtc = null)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(messageType);
+        ArgumentException.ThrowIfNullOrWhiteSpace(senderId);
+
         var payloadElement = JsonSerializer.SerializeToElement(payload, SerializerOptions);
 
         return new ProtocolEnvelope(
-            type,
+            messageType,
             CurrentVersion,
             senderId,
             timestampUtc ?? DateTimeOffset.UtcNow,
@@ -37,9 +41,19 @@ public static class ProtocolSerializer
         return JsonSerializer.Serialize(envelope, SerializerOptions);
     }
 
+    public static byte[] SerializeEnvelopeToUtf8(ProtocolEnvelope envelope)
+    {
+        return Encoding.UTF8.GetBytes(SerializeEnvelope(envelope));
+    }
+
     public static ProtocolEnvelope? DeserializeEnvelope(string json)
     {
         return JsonSerializer.Deserialize<ProtocolEnvelope>(json, SerializerOptions);
+    }
+
+    public static ProtocolEnvelope? DeserializeEnvelope(ReadOnlySpan<byte> utf8Bytes)
+    {
+        return JsonSerializer.Deserialize<ProtocolEnvelope>(utf8Bytes, SerializerOptions);
     }
 
     public static TPayload? DeserializePayload<TPayload>(ProtocolEnvelope envelope)

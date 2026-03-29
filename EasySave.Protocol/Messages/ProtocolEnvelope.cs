@@ -3,7 +3,7 @@ using System.Text.Json;
 namespace EasySave.Protocol.Messages;
 
 public sealed record ProtocolEnvelope(
-    string Type,
+    string MessageType,
     string ProtocolVersion,
     string SenderId,
     DateTimeOffset TimestampUtc,
