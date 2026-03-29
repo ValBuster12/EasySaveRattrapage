@@ -6,6 +6,9 @@ namespace EasySave.Protocol.Transport;
 
 public static class ProtocolSerializer
 {
+    /// <summary>
+    ///     Current protocol semantic version used in envelopes.
+    /// </summary>
     public const string CurrentVersion = "1.0";
 
     private static readonly JsonSerializerOptions SerializerOptions = new()
@@ -14,6 +17,9 @@ public static class ProtocolSerializer
         WriteIndented = false
     };
 
+    /// <summary>
+    ///     Creates a protocol envelope with metadata and serialized payload.
+    /// </summary>
     public static ProtocolEnvelope CreateEnvelope<TPayload>(
         string messageType,
         string senderId,
@@ -36,6 +42,9 @@ public static class ProtocolSerializer
             payloadElement);
     }
 
+    /// <summary>
+    ///     Serializes an envelope into a JSON string.
+    /// </summary>
     public static string SerializeEnvelope(ProtocolEnvelope envelope)
     {
         return JsonSerializer.Serialize(envelope, SerializerOptions);
@@ -46,6 +55,9 @@ public static class ProtocolSerializer
         return Encoding.UTF8.GetBytes(SerializeEnvelope(envelope));
     }
 
+    /// <summary>
+    ///     Deserializes an envelope from JSON text.
+    /// </summary>
     public static ProtocolEnvelope? DeserializeEnvelope(string json)
     {
         return JsonSerializer.Deserialize<ProtocolEnvelope>(json, SerializerOptions);
@@ -56,6 +68,9 @@ public static class ProtocolSerializer
         return JsonSerializer.Deserialize<ProtocolEnvelope>(utf8Bytes, SerializerOptions);
     }
 
+    /// <summary>
+    ///     Deserializes the strongly typed payload from an envelope.
+    /// </summary>
     public static TPayload? DeserializePayload<TPayload>(ProtocolEnvelope envelope)
     {
         return envelope.Payload.Deserialize<TPayload>(SerializerOptions);
