@@ -1,0 +1,98 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:vm="using:EasySave.RemoteConsole.ViewModels"
+        x:Class="EasySave.RemoteConsole.Views.MainWindow"
+        x:DataType="vm:MainWindowViewModel"
+        Title="EasySave Remote Console"
+        Width="1200"
+        Height="760"
+        MinWidth="950"
+        MinHeight="620"
+        mc:Ignorable="d">
+  <Grid RowDefinitions="Auto,Auto,*,Auto" Margin="16" RowSpacing="12">
+    <Border CornerRadius="6" Background="#1E1E2E" Padding="12">
+      <Grid ColumnDefinitions="Auto,*,Auto,Auto" ColumnSpacing="10">
+        <TextBlock Text="Connection:" VerticalAlignment="Center" />
+        <TextBlock Grid.Column="1" Text="{Binding ConnectionState}" FontWeight="Bold" VerticalAlignment="Center" />
+        <Button Grid.Column="2" Content="Connect" Command="{Binding ConnectCommand}" IsEnabled="{Binding CanConnect}" />
+        <Button Grid.Column="3" Content="Disconnect" Command="{Binding DisconnectCommand}" IsEnabled="{Binding CanDisconnect}" />
+      </Grid>
+    </Border>
+
+    <Grid Grid.Row="1" ColumnDefinitions="Auto,160,Auto,90,Auto,220,Auto,Auto" ColumnSpacing="10">
+      <TextBlock Text="Server IP" VerticalAlignment="Center" />
+      <TextBox Grid.Column="1" Text="{Binding ServerIp}" />
+      <TextBlock Grid.Column="2" Text="Port" VerticalAlignment="Center" />
+      <NumericUpDown Grid.Column="3" Minimum="1" Maximum="65535" Value="{Binding ServerPort}"/>
+      <TextBlock Grid.Column="4" Text="Selected Host" VerticalAlignment="Center" />
+      <TextBox Grid.Column="5" Text="{Binding SelectedHostInstanceId}" Watermark="host-instance-id" />
+      <Button Grid.Column="6" Content="Subscribe" Command="{Binding SelectHostCommand}" IsEnabled="{Binding CanSelectHost}" />
+    </Grid>
+
+    <Grid Grid.Row="2" ColumnDefinitions="320,*" ColumnSpacing="12">
+      <Border CornerRadius="6" BorderBrush="#3F3F56" BorderThickness="1" Padding="10">
+        <StackPanel Spacing="8">
+          <TextBlock Text="Available Hosts" FontWeight="Bold" />
+          <ListBox ItemsSource="{Binding Hosts}">
+            <ListBox.ItemTemplate>
+              <DataTemplate>
+                <Border Padding="6" Margin="0,0,0,4" Background="#232334" CornerRadius="4">
+                  <StackPanel>
+                    <TextBlock Text="{Binding DisplayName}" FontWeight="SemiBold" />
+                    <TextBlock Text="{Binding Version}" FontSize="11" Opacity="0.8" />
+                    <Button Content="Use this host"
+                            HorizontalAlignment="Left"
+                            Margin="0,6,0,0"
+                            Command="{Binding $parent[Window].DataContext.UseHostCommand}"
+                            CommandParameter="{Binding}" />
+                  </StackPanel>
+                </Border>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+        </StackPanel>
+      </Border>
+
+      <Border Grid.Column="1" CornerRadius="6" BorderBrush="#3F3F56" BorderThickness="1" Padding="10">
+        <StackPanel Spacing="8">
+          <TextBlock Text="Jobs" FontWeight="Bold" />
+          <TextBlock Text="{Binding SelectedHostLabel}" Opacity="0.8" />
+          <ListBox ItemsSource="{Binding Jobs}">
+            <ListBox.ItemTemplate>
+              <DataTemplate>
+                <Border Padding="10" Margin="0,0,0,6" Background="#20202D" CornerRadius="6">
+                  <Grid RowDefinitions="Auto,Auto,Auto" ColumnDefinitions="*,Auto,Auto,Auto" ColumnSpacing="8" RowSpacing="6">
+                    <TextBlock Text="{Binding JobName}" FontWeight="Bold" />
+                    <TextBlock Grid.Column="1" Text="Status:" Opacity="0.8" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="2" Grid.ColumnSpan="2" Text="{Binding StatusText}" VerticalAlignment="Center" />
+
+                    <ProgressBar Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="4" Minimum="0" Maximum="100" Value="{Binding Progress}" Height="18" />
+
+                    <Button Grid.Row="2" Grid.Column="1" Content="Pause"
+                            Command="{Binding $parent[Window].DataContext.PauseJobCommand}"
+                            CommandParameter="{Binding}"
+                            IsEnabled="{Binding CanPause}" />
+                    <Button Grid.Row="2" Grid.Column="2" Content="Resume"
+                            Command="{Binding $parent[Window].DataContext.ResumeJobCommand}"
+                            CommandParameter="{Binding}"
+                            IsEnabled="{Binding CanResume}" />
+                    <Button Grid.Row="2" Grid.Column="3" Content="Stop"
+                            Command="{Binding $parent[Window].DataContext.StopJobCommand}"
+                            CommandParameter="{Binding}"
+                            IsEnabled="{Binding CanStop}" />
+                  </Grid>
+                </Border>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+        </StackPanel>
+      </Border>
+    </Grid>
+
+    <Border Grid.Row="3" Background="#1E1E2E" CornerRadius="6" Padding="10">
+      <TextBlock Text="{Binding FeedbackMessage}" TextWrapping="Wrap" />
+    </Border>
+  </Grid>
+</Window>

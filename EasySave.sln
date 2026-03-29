@@ -17,6 +17,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EasySave.Server", "EasySave
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EasySave.Protocol", "EasySave.Protocol\EasySave.Protocol.csproj", "{6FCA422A-9D8B-4A1E-B47D-951EC8A4D880}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EasySave.RemoteConsole", "EasySave.RemoteConsole\EasySave.RemoteConsole.csproj", "{24F86D52-3381-4B96-A5D6-2512A96FAAF3}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -111,6 +113,18 @@ Global
 		{6FCA422A-9D8B-4A1E-B47D-951EC8A4D880}.Release|x64.Build.0 = Release|Any CPU
 		{6FCA422A-9D8B-4A1E-B47D-951EC8A4D880}.Release|x86.ActiveCfg = Release|Any CPU
 		{6FCA422A-9D8B-4A1E-B47D-951EC8A4D880}.Release|x86.Build.0 = Release|Any CPU
+		{24F86D52-3381-4B96-A5D6-2512A96FAAF3}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{24F86D52-3381-4B96-A5D6-2512A96FAAF3}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{24F86D52-3381-4B96-A5D6-2512A96FAAF3}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{24F86D52-3381-4B96-A5D6-2512A96FAAF3}.Debug|x64.Build.0 = Debug|Any CPU
+		{24F86D52-3381-4B96-A5D6-2512A96FAAF3}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{24F86D52-3381-4B96-A5D6-2512A96FAAF3}.Debug|x86.Build.0 = Debug|Any CPU
+		{24F86D52-3381-4B96-A5D6-2512A96FAAF3}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{24F86D52-3381-4B96-A5D6-2512A96FAAF3}.Release|Any CPU.Build.0 = Release|Any CPU
+		{24F86D52-3381-4B96-A5D6-2512A96FAAF3}.Release|x64.ActiveCfg = Release|Any CPU
+		{24F86D52-3381-4B96-A5D6-2512A96FAAF3}.Release|x64.Build.0 = Release|Any CPU
+		{24F86D52-3381-4B96-A5D6-2512A96FAAF3}.Release|x86.ActiveCfg = Release|Any CPU
+		{24F86D52-3381-4B96-A5D6-2512A96FAAF3}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
