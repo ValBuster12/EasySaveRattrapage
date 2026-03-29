@@ -127,7 +127,7 @@ public static class Server
                 default:
                     await SendErrorAsync(
                         session.Channel,
-                        "server",
+                        ProtocolParticipantIds.Broker,
                         "UNSUPPORTED_MESSAGE",
                         $"Unsupported message type '{envelope.MessageType}'.",
                         envelope.MessageId,
@@ -140,7 +140,7 @@ public static class Server
         {
             await SendErrorAsync(
                 session.Channel,
-                "server",
+                ProtocolParticipantIds.Broker,
                 "PROCESSING_ERROR",
                 "Message processing failed.",
                 envelope.MessageId,
@@ -159,7 +159,7 @@ public static class Server
         var registration = ProtocolSerializer.DeserializePayload<HostRegistrationMessage>(envelope);
         if (registration is null || string.IsNullOrWhiteSpace(registration.InstanceId))
         {
-            return SendErrorAsync(session.Channel, "server", "INVALID_HOST_REGISTRATION", "Invalid host registration payload.", envelope.MessageId, cancellationToken);
+            return SendErrorAsync(session.Channel, ProtocolParticipantIds.Broker, "INVALID_HOST_REGISTRATION", "Invalid host registration payload.", envelope.MessageId, cancellationToken);
         }
 
         session.Role = ProtocolClientKind.EasySaveHost;
@@ -180,7 +180,7 @@ public static class Server
         var registration = ProtocolSerializer.DeserializePayload<RemoteConsoleRegistrationMessage>(envelope);
         if (registration is null)
         {
-            await SendErrorAsync(session.Channel, "server", "INVALID_REMOTE_REGISTRATION", "Invalid remote console registration payload.", envelope.MessageId, cancellationToken);
+            await SendErrorAsync(session.Channel, ProtocolParticipantIds.Broker, "INVALID_REMOTE_REGISTRATION", "Invalid remote console registration payload.", envelope.MessageId, cancellationToken);
             return;
         }
 
@@ -196,7 +196,7 @@ public static class Server
             {
                 await SendErrorAsync(
                     session.Channel,
-                    "server",
+                    ProtocolParticipantIds.Broker,
                     "HOST_OFFLINE",
                     $"Host '{registration.RequestedInstanceId}' is not currently connected.",
                     envelope.MessageId,
@@ -251,7 +251,7 @@ public static class Server
         ProtocolEnvelope envelope,
         CancellationToken cancellationToken)
     {
-        if (hostSession.Role != ProtocolClientKind.EasySaveHost || string.IsNullOrWhiteSpace(hostSession.InstanceId))
+        if (!BrokerRoutingPolicy.CanPublishHostMessage(hostSession.Role, hostSession.InstanceId))
         {
             LogError($"Relay denied: host-only message '{envelope.MessageType}' from unregistered connection {hostSession.ConnectionId}");
             return;
@@ -259,9 +259,8 @@ public static class Server
 
         var instanceId = hostSession.InstanceId;
         var targetRemotes = SessionsByConnectionId.Values
-            .Where(s => s.Role == ProtocolClientKind.RemoteConsole
-                        && RemoteSubscriptions.TryGetValue(s.ConnectionId, out var subscribed)
-                        && string.Equals(subscribed, instanceId, StringComparison.OrdinalIgnoreCase))
+            .Where(s => RemoteSubscriptions.TryGetValue(s.ConnectionId, out var subscribed)
+                        && BrokerRoutingPolicy.IsSubscribedRemote(s.Role, subscribed, instanceId))
             .ToList();
 
         foreach (var remoteSession in targetRemotes)
@@ -283,16 +282,10 @@ public static class Server
         ProtocolEnvelope envelope,
         CancellationToken cancellationToken)
     {
-        if (remoteSession.Role != ProtocolClientKind.RemoteConsole)
-        {
-            LogError($"Relay denied: remote-only message '{envelope.MessageType}' from unregistered connection {remoteSession.ConnectionId}");
-            return;
-        }
-
         var request = ProtocolSerializer.DeserializePayload<CommandRequestMessage>(envelope);
-        if (request is null || string.IsNullOrWhiteSpace(request.TargetInstanceId))
+        if (!BrokerRoutingPolicy.CanRelayRemoteCommand(remoteSession.Role, request))
         {
-            await SendErrorAsync(remoteSession.Channel, "server", "INVALID_COMMAND_REQUEST", "Invalid command request payload.", envelope.MessageId, cancellationToken);
+            await SendErrorAsync(remoteSession.Channel, ProtocolParticipantIds.Broker, "INVALID_COMMAND_REQUEST", "Invalid command request payload.", envelope.MessageId, cancellationToken);
             return;
         }
 
@@ -300,7 +293,7 @@ public static class Server
         {
             await SendErrorAsync(
                 remoteSession.Channel,
-                "server",
+                ProtocolParticipantIds.Broker,
                 "HOST_OFFLINE",
                 $"Host '{request.TargetInstanceId}' is not currently connected.",
                 envelope.MessageId,
@@ -320,9 +313,8 @@ public static class Server
             LogInfo($"Unregister host: instanceId={session.InstanceId}, connection={session.ConnectionId}");
 
             var impactedRemotes = SessionsByConnectionId.Values
-                .Where(s => s.Role == ProtocolClientKind.RemoteConsole
-                            && RemoteSubscriptions.TryGetValue(s.ConnectionId, out var subscribed)
-                            && string.Equals(subscribed, session.InstanceId, StringComparison.OrdinalIgnoreCase))
+                .Where(s => RemoteSubscriptions.TryGetValue(s.ConnectionId, out var subscribed)
+                            && BrokerRoutingPolicy.IsSubscribedRemote(s.Role, subscribed, session.InstanceId))
                 .ToList();
 
             foreach (var remote in impactedRemotes)
@@ -331,7 +323,7 @@ public static class Server
                 {
                     await SendErrorAsync(
                         remote.Channel,
-                        "server",
+                        ProtocolParticipantIds.Broker,
                         "HOST_DISCONNECTED",
                         $"Host '{session.InstanceId}' disconnected.",
                         null,

@@ -4,6 +4,9 @@ namespace EasySave.RemoteConsole.Services;
 
 public interface IRemoteConsoleClientService : IAsyncDisposable
 {
+    /// <summary>
+    ///     Raised when the TCP connection state changes.
+    /// </summary>
     event EventHandler<bool>? ConnectionStateChanged;
     event EventHandler<HostRegistrationMessage>? HostDiscovered;
     event EventHandler<BackupJobSnapshotMessage>? JobSnapshotReceived;

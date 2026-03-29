@@ -529,23 +529,15 @@ public partial class JobsViewModel : ViewModelBase
 
         try
         {
-            switch (request.Command)
-            {
-                case CommandType.Pause:
-                    await Dispatcher.UIThread.InvokeAsync(jobItem.PauseForRemoteCommand);
-                    break;
-                case CommandType.Resume:
-                    await Dispatcher.UIThread.InvokeAsync(jobItem.ResumeForRemoteCommand);
-                    break;
-                case CommandType.Stop:
-                    await Dispatcher.UIThread.InvokeAsync(jobItem.StopForRemoteCommand);
-                    break;
-                case CommandType.Start:
-                    _ = Task.Run(jobItem.StartForRemoteCommandAsync);
-                    break;
-                default:
-                    return BuildCommandResult(request, CommandResultStatus.Rejected, "Unsupported command.");
-            }
+            var dispatched = await RemoteCommandDispatcher.DispatchAsync(
+                request.Command,
+                pause: async () => await Dispatcher.UIThread.InvokeAsync(jobItem.PauseForRemoteCommand),
+                resume: async () => await Dispatcher.UIThread.InvokeAsync(jobItem.ResumeForRemoteCommand),
+                stop: async () => await Dispatcher.UIThread.InvokeAsync(jobItem.StopForRemoteCommand),
+                startAsync: () => Task.Run(jobItem.StartForRemoteCommandAsync));
+
+            if (!dispatched)
+                return BuildCommandResult(request, CommandResultStatus.Rejected, "Unsupported command.");
         }
         catch (Exception ex)
         {

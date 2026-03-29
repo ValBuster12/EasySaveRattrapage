@@ -18,7 +18,7 @@ public sealed class RemoteConsoleClientService : IRemoteConsoleClientService
     private bool _intentionalClose;
     private string? _serverIp;
     private int _serverPort;
-    private string? _selectedHostId;
+    private string? _selectedHostInstanceId;
 
     public event EventHandler<bool>? ConnectionStateChanged;
     public event EventHandler<HostRegistrationMessage>? HostDiscovered;
@@ -36,7 +36,7 @@ public sealed class RemoteConsoleClientService : IRemoteConsoleClientService
         {
             _serverIp = serverIp;
             _serverPort = serverPort;
-            _selectedHostId = string.IsNullOrWhiteSpace(requestedInstanceId) ? null : requestedInstanceId;
+            _selectedHostInstanceId = string.IsNullOrWhiteSpace(requestedInstanceId) ? null : requestedInstanceId;
 
             _intentionalClose = true;
             await CloseConnectionCoreAsync();
@@ -52,7 +52,7 @@ public sealed class RemoteConsoleClientService : IRemoteConsoleClientService
 
     public async Task SelectHostAsync(string? instanceId, CancellationToken cancellationToken = default)
     {
-        _selectedHostId = string.IsNullOrWhiteSpace(instanceId) ? null : instanceId;
+        _selectedHostInstanceId = string.IsNullOrWhiteSpace(instanceId) ? null : instanceId;
         if (!IsConnected)
             return;
 
@@ -120,7 +120,7 @@ public sealed class RemoteConsoleClientService : IRemoteConsoleClientService
             typeof(RemoteConsoleClientService).Assembly.GetName().Version?.ToString() ?? "unknown",
             DateTimeOffset.UtcNow,
             DateTimeOffset.UtcNow,
-            _selectedHostId);
+            _selectedHostInstanceId);
 
         var envelope = ProtocolSerializer.CreateEnvelope(
             ProtocolMessageTypes.RemoteConsoleRegistration,
@@ -167,35 +167,32 @@ public sealed class RemoteConsoleClientService : IRemoteConsoleClientService
         switch (envelope.MessageType)
         {
             case ProtocolMessageTypes.HostRegistration:
-                var host = ProtocolSerializer.DeserializePayload<HostRegistrationMessage>(envelope);
-                if (host is not null)
-                    HostDiscovered?.Invoke(this, host);
+                DispatchIfPayload(envelope, HostDiscovered);
                 break;
 
             case ProtocolMessageTypes.BackupJobSnapshot:
-                var snapshot = ProtocolSerializer.DeserializePayload<BackupJobSnapshotMessage>(envelope);
-                if (snapshot is not null)
-                    JobSnapshotReceived?.Invoke(this, snapshot);
+                DispatchIfPayload(envelope, JobSnapshotReceived);
                 break;
 
             case ProtocolMessageTypes.ProgressUpdate:
-                var progress = ProtocolSerializer.DeserializePayload<ProgressUpdateMessage>(envelope);
-                if (progress is not null)
-                    ProgressReceived?.Invoke(this, progress);
+                DispatchIfPayload(envelope, ProgressReceived);
                 break;
 
             case ProtocolMessageTypes.CommandResult:
-                var command = ProtocolSerializer.DeserializePayload<CommandResultMessage>(envelope);
-                if (command is not null)
-                    CommandResultReceived?.Invoke(this, command);
+                DispatchIfPayload(envelope, CommandResultReceived);
                 break;
 
             case ProtocolMessageTypes.Error:
-                var error = ProtocolSerializer.DeserializePayload<ErrorMessage>(envelope);
-                if (error is not null)
-                    ErrorReceived?.Invoke(this, error);
+                DispatchIfPayload(envelope, ErrorReceived);
                 break;
         }
+    }
+
+    private void DispatchIfPayload<TPayload>(ProtocolEnvelope envelope, EventHandler<TPayload>? handler)
+    {
+        var payload = ProtocolSerializer.DeserializePayload<TPayload>(envelope);
+        if (payload is not null)
+            handler?.Invoke(this, payload);
     }
 
     private async Task TryReconnectAsync(CancellationToken cancellationToken)

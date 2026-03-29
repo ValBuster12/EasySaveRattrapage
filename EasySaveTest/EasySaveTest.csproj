@@ -25,6 +25,8 @@
 
     <ItemGroup>
         <ProjectReference Include="..\EasySave\EasySave.csproj"/>
+        <ProjectReference Include="..\EasySave.Protocol\EasySave.Protocol.csproj"/>
+        <ProjectReference Include="..\EasySave.Server\EasySave.Server.csproj"/>
     </ItemGroup>
 
 </Project>
