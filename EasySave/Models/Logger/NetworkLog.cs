@@ -1,8 +1,8 @@
 using System;
 using System.Net;
 using System.Net.Sockets;
-using System.Text;
 using System.Text.Json;
+using EasySave.Protocol.Transport;
 using EasySave.Data.Configuration;
 
 namespace EasySave.Models.Logger;
@@ -99,20 +99,14 @@ public sealed class NetworkLog
     {
         lock (this) // Ensure thread safety
         {
-            // Serialize the message to JSON and convert it to byte array
-            var data = Encoding.ASCII.GetBytes(JsonSerializer.Serialize(message, _options));
+            var data = JsonSerializer.Serialize(message, _options);
 
             try
             {
                 if (_tcpClient is { Connected: true })
                 {
                     NetworkStream stream = _tcpClient.GetStream();
-                    // Send the length of the data first
-                    var lengthBytes = BitConverter.GetBytes(data.Length);
-                    stream.Write(lengthBytes, 0, lengthBytes.Length); // Send length (4 bytes)
-            
-                    // Then send the actual data
-                    stream.Write(data, 0, data.Length); // Send log entry data
+                    LengthPrefixedMessageFraming.WriteFrameAsync(stream, data).GetAwaiter().GetResult();
                 }
                 else
                 {

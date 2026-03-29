@@ -1,13 +1,13 @@
 namespace EasySave.Protocol.Messages;
 
-public enum ClientKind
+public enum ProtocolClientKind
 {
-    BackupHost,
+    EasySaveHost,
     RemoteConsole,
-    Broker
+    Server
 }
 
-public enum RemoteJobRunState
+public enum RemoteJobStatus
 {
     Idle,
     Running,
@@ -17,14 +17,15 @@ public enum RemoteJobRunState
     Failed
 }
 
-public enum BackupCommandType
+public enum CommandType
 {
     Pause,
     Resume,
-    Stop
+    Stop,
+    Start
 }
 
-public enum CommandAckStatus
+public enum CommandResultStatus
 {
     Accepted,
     Rejected,
@@ -32,65 +33,80 @@ public enum CommandAckStatus
     Failed
 }
 
-public sealed record HelloRegisterMessage(
-    ClientKind ClientKind,
-    string ClientId,
+public sealed record HostRegistrationMessage(
+    string InstanceId,
+    string HostName,
+    string ApplicationVersion,
+    DateTimeOffset StartedAtUtc,
+    DateTimeOffset SentAtUtc,
+    IReadOnlyList<string>? Capabilities = null);
+
+public sealed record RemoteConsoleRegistrationMessage(
+    string ConsoleId,
     string DisplayName,
-    string[] Capabilities,
-    string? RequestedHostId = null);
+    string ApplicationVersion,
+    DateTimeOffset ConnectedAtUtc,
+    DateTimeOffset SentAtUtc,
+    string? RequestedInstanceId = null);
 
-public sealed record JobStateSnapshotMessage(
-    string HostId,
-    IReadOnlyList<JobStateSnapshotItem> Jobs);
-
-public sealed record JobStateSnapshotItem(
+public sealed record BackupJobSnapshotMessage(
+    string InstanceId,
     int JobId,
     string JobName,
-    string SourceDirectory,
-    string TargetDirectory,
-    RemoteJobRunState State,
-    double ProgressPercent,
-    long TotalBytes,
-    long TransferredBytes,
-    int TotalFiles,
-    int ProcessedFiles,
-    bool CanPause,
-    bool CanResume,
-    bool CanStop,
-    string? StatusMessage);
+    RemoteJobStatus Status,
+    double CurrentProgress,
+    int FilesCount,
+    int CurrentFileIndex,
+    long TransferredSize,
+    long TotalSize,
+    DateTimeOffset UpdatedAtUtc,
+    DateTimeOffset SentAtUtc);
 
 public sealed record ProgressUpdateMessage(
-    string HostId,
+    string InstanceId,
     int JobId,
-    RemoteJobRunState State,
-    double ProgressPercent,
-    long TotalBytes,
-    long TransferredBytes,
-    int TotalFiles,
-    int ProcessedFiles,
-    string? CurrentFile,
-    string? StatusMessage);
+    string JobName,
+    RemoteJobStatus Status,
+    double CurrentProgress,
+    int FilesCount,
+    int CurrentFileIndex,
+    long TransferredSize,
+    long TotalSize,
+    DateTimeOffset UpdatedAtUtc,
+    DateTimeOffset SentAtUtc,
+    string? CurrentFilePath = null,
+    string? StatusDetail = null);
 
 public sealed record CommandRequestMessage(
-    string HostId,
+    string RequestId,
+    string TargetInstanceId,
     int JobId,
-    BackupCommandType Command,
+    string JobName,
+    CommandType Command,
     string RequestedBy,
+    DateTimeOffset RequestedAtUtc,
     string? Reason = null);
 
-public sealed record CommandAcknowledgmentMessage(
-    string HostId,
+public sealed record CommandResultMessage(
+    string RequestId,
+    string InstanceId,
     int JobId,
-    BackupCommandType Command,
-    CommandAckStatus Status,
+    string JobName,
+    CommandType Command,
+    CommandResultStatus Status,
+    DateTimeOffset RespondedAtUtc,
     string? Message = null);
 
 public sealed record HeartbeatMessage(
-    ClientKind ClientKind,
-    string ClientId,
+    ProtocolClientKind SenderKind,
+    string SenderId,
+    string? InstanceId,
     DateTimeOffset SentAtUtc);
 
-public sealed record DisconnectMessage(
-    ClientKind ClientKind,
-    string ClientId,
-    string Reason);
+public sealed record ErrorMessage(
+    string SenderId,
+    string ErrorCode,
+    string Error,
+    DateTimeOffset SentAtUtc,
+    string? Details = null,
+    string? RelatedRequestId = null);
