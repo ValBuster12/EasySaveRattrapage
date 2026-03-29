@@ -74,7 +74,7 @@ public sealed class BackupHostCommunicationService : IBackupHostCommunicationSer
             snapshot.TotalSize,
             DateTimeOffset.UtcNow,
             DateTimeOffset.UtcNow,
-            statusDetail: detail);
+            StatusDetail: detail);
 
         SendEnvelope(ProtocolMessageTypes.ProgressUpdate, message);
     }
