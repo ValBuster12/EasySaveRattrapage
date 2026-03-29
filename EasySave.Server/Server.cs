@@ -150,7 +150,7 @@ public static class Server
         }
     }
 
-    private static Task RegisterHostAsync(
+    private static async Task RegisterHostAsync(
         ClientSession session,
         ProtocolEnvelope envelope,
         CancellationToken cancellationToken)
@@ -165,10 +165,10 @@ public static class Server
         session.ClientId = envelope.SenderId;
         session.InstanceId = registration.InstanceId;
 
-        HostsByInstanceId[registration.InstanceId] = new HostSession(registration.InstanceId, session.ConnectionId, session);
+        HostsByInstanceId[registration.InstanceId] = new HostSession(registration, session.ConnectionId, session);
         LogInfo($"Register host: connection={session.ConnectionId}, instanceId={registration.InstanceId}, senderId={envelope.SenderId}");
 
-        return Task.CompletedTask;
+        await BroadcastHostRegistrationAsync(envelope, cancellationToken);
     }
 
     private static async Task RegisterRemoteConsoleAsync(
@@ -204,16 +204,45 @@ public static class Server
         }
         else
         {
-            await SendErrorAsync(
-                session.Channel,
-                "server",
-                "SUBSCRIPTION_MISSING",
-                "Remote console must provide requestedInstanceId.",
-                envelope.MessageId,
-                cancellationToken);
+            RemoteSubscriptions.TryRemove(session.ConnectionId, out _);
+        }
+
+        foreach (var host in HostsByInstanceId.Values)
+        {
+            var hostRegistration = new HostRegistrationMessage(
+                host.Registration.InstanceId,
+                host.Registration.HostName,
+                host.Registration.ApplicationVersion,
+                host.Registration.StartedAtUtc,
+                DateTimeOffset.UtcNow,
+                host.Registration.Capabilities);
+
+            var hostEnvelope = ProtocolSerializer.CreateEnvelope(
+                ProtocolMessageTypes.HostRegistration,
+                host.Registration.InstanceId,
+                hostRegistration);
+
+            await session.Channel.SendAsync(hostEnvelope, cancellationToken);
         }
 
         LogInfo($"Register remote console: connection={session.ConnectionId}, senderId={envelope.SenderId}");
+    }
+
+    private static async Task BroadcastHostRegistrationAsync(ProtocolEnvelope envelope, CancellationToken cancellationToken)
+    {
+        var remotes = SessionsByConnectionId.Values.Where(s => s.Role == ProtocolClientKind.RemoteConsole).ToList();
+
+        foreach (var remote in remotes)
+        {
+            try
+            {
+                await remote.Channel.SendAsync(envelope, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                LogError($"Failed to broadcast host registration to remote {remote.ConnectionId}: {ex.Message}");
+            }
+        }
     }
 
     private static async Task RelayHostToSubscribersAsync(
@@ -402,5 +431,5 @@ public static class Server
         public string? InstanceId { get; set; }
     }
 
-    private sealed record HostSession(string InstanceId, Guid ConnectionId, ClientSession Session);
+    private sealed record HostSession(HostRegistrationMessage Registration, Guid ConnectionId, ClientSession Session);
 }
