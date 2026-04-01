@@ -246,7 +246,11 @@ public sealed partial class BackupJobItemViewModel : ViewModelBase
 
     public Task StartForRemoteCommandAsync()
     {
-        if (!Stopped)
+        if (Paused)
+            return Task.CompletedTask;
+
+        var isActivelyRunning = !Stopped && Job.CurrentProgress > 0 && Job.CurrentProgress < 100;
+        if (isActivelyRunning)
             return Task.CompletedTask;
 
         if (_executeJobCallback != null)
