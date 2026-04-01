@@ -6,6 +6,42 @@ namespace EasySaveTest;
 public class BackupJobItemViewModelTests
 {
     [Test]
+    public async Task StartForRemoteCommandAsync_WhenJobIsIdle_InvokesExecuteCallback()
+    {
+        var job = new BackupJob(1, "IdleJob", "C:\\Source", "C:\\Target", BackupType.Complete);
+        var executeCalls = 0;
+        var viewModel = new BackupJobItemViewModel(job, executeJobCallback: _ =>
+        {
+            executeCalls++;
+            return Task.CompletedTask;
+        });
+
+        await viewModel.StartForRemoteCommandAsync();
+
+        Assert.That(executeCalls, Is.EqualTo(1));
+    }
+
+    [Test]
+    public async Task StartForRemoteCommandAsync_WhenJobIsAlreadyRunning_DoesNotInvokeExecuteCallback()
+    {
+        var job = new BackupJob(1, "RunningJob", "C:\\Source", "C:\\Target", BackupType.Complete)
+        {
+            TotalSize = 100,
+            TransferredSize = 50
+        };
+        var executeCalls = 0;
+        var viewModel = new BackupJobItemViewModel(job, executeJobCallback: _ =>
+        {
+            executeCalls++;
+            return Task.CompletedTask;
+        });
+
+        await viewModel.StartForRemoteCommandAsync();
+
+        Assert.That(executeCalls, Is.EqualTo(0));
+    }
+
+    [Test]
     public void Constructor_WithValidJob_CreatesInstance()
     {
         var job = new BackupJob(1, "TestJob", "C:\\Source", "C:\\Target", BackupType.Complete);

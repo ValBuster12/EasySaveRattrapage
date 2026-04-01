@@ -524,7 +524,8 @@ public partial class JobsViewModel : ViewModelBase
             return BuildCommandResult(request, CommandResultStatus.Rejected, "Cannot resume: job is not paused.");
         if (request.Command == CommandType.Stop && job.WasStopped)
             return BuildCommandResult(request, CommandResultStatus.Rejected, "Cannot stop: job is not running.");
-        if (request.Command == CommandType.Start && !job.WasStopped)
+        if (request.Command == CommandType.Start && !job.WasStopped && !job.IsPaused() &&
+            job.CurrentProgress > 0 && job.CurrentProgress < 100)
             return BuildCommandResult(request, CommandResultStatus.Rejected, "Cannot start: job is already running.");
 
         try
