@@ -183,6 +183,24 @@
                         </StackPanel>
                     </Border>
                 </Grid>
+
+                <Border Classes="main-section">
+                    <StackPanel Spacing="8">
+                        <TextBlock Text="Remote host identity"
+                                   Classes="section-title" />
+                        <Grid ColumnDefinitions="Auto,*,Auto,*"
+                              ColumnSpacing="8">
+                            <TextBlock Grid.Column="0" Text="Display name :" Classes="settings-label" />
+                            <TextBox Grid.Column="1"
+                                     Text="{Binding Settings.HostDisplayName}"
+                                     Watermark="optional" />
+                            <TextBlock Grid.Column="2" Text="Instance label :" Classes="settings-label" />
+                            <TextBox Grid.Column="3"
+                                     Text="{Binding Settings.HostInstanceLabel}"
+                                     Watermark="optional" />
+                        </Grid>
+                    </StackPanel>
+                </Border>
                 </StackPanel>
             </ScrollViewer>
         </Border>

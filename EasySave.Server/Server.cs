@@ -1,128 +1,477 @@
-﻿using System.Net;
+using System.Collections.Concurrent;
+using System.Net;
 using System.Net.Sockets;
-using System.Text;
 using System.Text.Json;
-using EasyLog;
-using EasySave.Log.Model;
+using EasySave.Protocol.Messages;
+using EasySave.Protocol.Transport;
 
 namespace EasySave.Server;
 
 /// <summary>
-///     Main class for the TCP server that receives messages.
+/// EasySave TCP broker for the remote console feature.
+///
+/// Startup flow:
+/// 1) Resolve IP and port from command-line args (or defaults).
+/// 2) Start TcpListener.
+/// 3) Accept each TCP client asynchronously and process messages in its own task.
+/// 4) Register client role using protocol registration messages.
+/// 5) Route protocol messages between Host and RemoteConsole clients without business logic.
 /// </summary>
 public static class Server
 {
-    // Logger used for logging messages
-    private static AbstractLogger<LogEntry> _logger;
+    private const int DefaultPort = 5000;
+    private static readonly IPAddress DefaultIp = IPAddress.Any;
 
-    // TCP listener for receiving messages
-    private static TcpListener _tcpServer;
+    private static readonly ConcurrentDictionary<string, HostSession> HostsByInstanceId = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly ConcurrentDictionary<Guid, ClientSession> SessionsByConnectionId = new();
+    private static readonly ConcurrentDictionary<Guid, string> RemoteSubscriptions = new();
 
-    /// <summary>
-    ///     Main entry point of the application.
-    /// </summary>
-    public static void Main(string[] args)
+    public static async Task Main(string[] args)
     {
-        StartServer(); // Start the server
+        var (ipAddress, port, routingMode) = ParseStartupConfiguration(args);
+        using var listener = new TcpListener(ipAddress, port);
+        listener.Start();
 
-        // Check the log type to use, either XML or JSON
-        var logType = Environment.GetEnvironmentVariable("EasySaveLogType");
-        if (logType == "xml")
-            _logger = new XmlLogger<LogEntry>("./logs/"); // Initialize XML logger
-        else
-            _logger = new JsonLogger<LogEntry>("./logs/"); // Initialize JSON logger
+        LogInfo($"Broker started on {ipAddress}:{port} (routing={routingMode})");
 
-        Console.WriteLine("Server is listening for TCP messages...");
-
-        // Infinite loop to listen for client messages
-        while (true)
+        using var cts = new CancellationTokenSource();
+        Console.CancelKeyPress += (_, eventArgs) =>
         {
-            ListenForClients(); // Listen for incoming messages
+            eventArgs.Cancel = true;
+            cts.Cancel();
+            LogInfo("Shutdown requested (Ctrl+C).");
+        };
+
+        try
+        {
+            while (!cts.Token.IsCancellationRequested)
+            {
+                var tcpClient = await listener.AcceptTcpClientAsync(cts.Token);
+                _ = Task.Run(() => HandleClientAsync(tcpClient, cts.Token), cts.Token);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Expected during shutdown.
+        }
+        finally
+        {
+            listener.Stop();
+            LogInfo("Broker stopped.");
         }
     }
 
-    /// <summary>
-    ///     Initializes the TCP server by binding to a specified port.
-    /// </summary>
-    private static void StartServer()
+    private static async Task HandleClientAsync(TcpClient tcpClient, CancellationToken cancellationToken)
     {
-        _tcpServer = new TcpListener(IPAddress.Any, 5000); // Bind to port 5000
-        _tcpServer.Start(); // Start listening for TCP connections
-    }
+        var connectionId = Guid.NewGuid();
+        var remoteEndPoint = (IPEndPoint?)tcpClient.Client.RemoteEndPoint;
+        var endpointText = remoteEndPoint is null ? "unknown" : $"{remoteEndPoint.Address}:{remoteEndPoint.Port}";
 
-    /// <summary>
-    ///     Listens for clients to receive TCP messages.
-    /// </summary>
-    private static void ListenForClients()
-    {
+        var session = new ClientSession(connectionId, endpointText, tcpClient);
+        SessionsByConnectionId[connectionId] = session;
+        LogInfo($"Connect: {connectionId} from {endpointText}");
+
         try
         {
-            using var client = _tcpServer.AcceptTcpClient(); // Accept incoming TCP client connection
-            using var networkStream = client.GetStream(); // Get the network stream for the client
-
-            var lengthBuffer = new byte[4]; // Buffer to read the length of the incoming message
-
-            try
+            while (!cancellationToken.IsCancellationRequested)
             {
-                // Read the first 4 bytes to get the length of the incoming data
-                int bytesRead = networkStream.Read(lengthBuffer, 0, lengthBuffer.Length);
-                if (bytesRead == 4) // Make sure we read the correct amount
+                var envelope = await session.Channel.ReceiveAsync(cancellationToken);
+                if (envelope is null)
                 {
-                    int dataLength = BitConverter.ToInt32(lengthBuffer, 0); // Convert bytes to integer
-
-                    var dataBuffer = new byte[dataLength]; // Create a buffer for the incoming data
-                    bytesRead = networkStream.Read(dataBuffer, 0, dataLength); // Read the actual data
-
-                    var data = Encoding.ASCII.GetString(dataBuffer, 0, bytesRead); // Convert received data to string
-
-                    // Deserialize the received data into a log entry
-                    var entry = JsonSerializer.Deserialize<LogEntry>(data);
-                    if (entry != null)
-                    {
-                        entry.ClientIPAddress = ((IPEndPoint)client.Client.RemoteEndPoint).Address.ToString(); // Add client IP address to log entry
-                        var logMessage = FormatLogMessage(entry.ToString(), (IPEndPoint)client.Client.RemoteEndPoint); // Format log message
-                        Console.WriteLine(logMessage); // Display the message in the console
-
-                        Log(entry); // Log the entry
-                    }
+                    break;
                 }
-                else
-                {
-                    Console.WriteLine("Failed to read the length of the incoming data.");
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Exception: {ex.Message}"); // Handle exceptions and display the error
+
+                await HandleEnvelopeAsync(session, envelope, cancellationToken);
             }
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Exception: {ex.Message}"); // Handle exceptions and display the error
+            LogError($"Connection error on {connectionId}: {ex.Message}");
+        }
+        finally
+        {
+            await CleanupConnectionAsync(session, cancellationToken);
+            SessionsByConnectionId.TryRemove(connectionId, out _);
+            tcpClient.Dispose();
+            LogInfo($"Disconnect: {connectionId} from {endpointText}");
         }
     }
 
-    /// <summary>
-    ///     Formats the log message with a timestamp and the client's IP address.
-    /// </summary>
-    /// <param name="message">The log message.</param>
-    /// <param name="client">The client's endpoint.</param>
-    /// <returns>Formatted message.</returns>
-    private static string FormatLogMessage(string message, IPEndPoint client)
+    private static async Task HandleEnvelopeAsync(
+        ClientSession session,
+        ProtocolEnvelope envelope,
+        CancellationToken cancellationToken)
     {
-        var timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"); // Get the timestamp
-        var clientIp = client.Address.ToString(); // Get the client's IP address
-        return $"[{timestamp}] [{clientIp}] {message}"; // Return the formatted message
+        try
+        {
+            switch (envelope.MessageType)
+            {
+                case ProtocolMessageTypes.HostRegistration:
+                    await RegisterHostAsync(session, envelope, cancellationToken);
+                    break;
+
+                case ProtocolMessageTypes.RemoteConsoleRegistration:
+                    await RegisterRemoteConsoleAsync(session, envelope, cancellationToken);
+                    break;
+
+                case ProtocolMessageTypes.BackupJobSnapshot:
+                case ProtocolMessageTypes.ProgressUpdate:
+                case ProtocolMessageTypes.CommandResult:
+                    await RelayHostToSubscribersAsync(session, envelope, cancellationToken);
+                    break;
+
+                case ProtocolMessageTypes.CommandRequest:
+                    await RelayRemoteToHostAsync(session, envelope, cancellationToken);
+                    break;
+
+                default:
+                    await SendErrorAsync(
+                        session.Channel,
+                        ProtocolParticipantIds.Broker,
+                        "UNSUPPORTED_MESSAGE",
+                        $"Unsupported message type '{envelope.MessageType}'.",
+                        envelope.MessageId,
+                        cancellationToken);
+                    LogError($"Unsupported message '{envelope.MessageType}' from {session.ConnectionId}");
+                    break;
+            }
+        }
+        catch (Exception ex)
+        {
+            await SendErrorAsync(
+                session.Channel,
+                ProtocolParticipantIds.Broker,
+                "PROCESSING_ERROR",
+                "Message processing failed.",
+                envelope.MessageId,
+                cancellationToken,
+                ex.Message);
+
+            LogError($"Processing error for {session.ConnectionId}: {ex.Message}");
+        }
     }
 
-    /// <summary>
-    ///     Logs the provided message in the appropriate format.
-    /// </summary>
-    /// <param name="message">The log entry to log.</param>
-    private static void Log(LogEntry message)
+    private static async Task RegisterHostAsync(
+        ClientSession session,
+        ProtocolEnvelope envelope,
+        CancellationToken cancellationToken)
     {
-        // Create the logs directory if it doesn't already exist
-        if (!Directory.Exists("logs")) Directory.CreateDirectory("logs");
-        _logger.Log(message); // Log the message using the logger
+        var registration = ProtocolSerializer.DeserializePayload<HostRegistrationMessage>(envelope);
+        if (registration is null || string.IsNullOrWhiteSpace(registration.InstanceId))
+        {
+            await SendErrorAsync(session.Channel, ProtocolParticipantIds.Broker, "INVALID_HOST_REGISTRATION", "Invalid host registration payload.", envelope.MessageId, cancellationToken);
+            return;
+        }
+
+        session.Role = ProtocolClientKind.EasySaveHost;
+        session.ClientId = envelope.SenderId;
+        session.InstanceId = registration.InstanceId;
+
+        HostsByInstanceId[registration.InstanceId] = new HostSession(registration, session.ConnectionId, session);
+        LogInfo($"Register host: connection={session.ConnectionId}, instanceId={registration.InstanceId}, senderId={envelope.SenderId}");
+
+        await BroadcastHostRegistrationAsync(envelope, cancellationToken);
+    }
+
+    private static async Task RegisterRemoteConsoleAsync(
+        ClientSession session,
+        ProtocolEnvelope envelope,
+        CancellationToken cancellationToken)
+    {
+        var registration = ProtocolSerializer.DeserializePayload<RemoteConsoleRegistrationMessage>(envelope);
+        if (registration is null)
+        {
+            await SendErrorAsync(session.Channel, ProtocolParticipantIds.Broker, "INVALID_REMOTE_REGISTRATION", "Invalid remote console registration payload.", envelope.MessageId, cancellationToken);
+            return;
+        }
+
+        session.Role = ProtocolClientKind.RemoteConsole;
+        session.ClientId = envelope.SenderId;
+
+        if (!string.IsNullOrWhiteSpace(registration.RequestedInstanceId))
+        {
+            RemoteSubscriptions[session.ConnectionId] = registration.RequestedInstanceId;
+            LogInfo($"Subscribe: remote={session.ConnectionId} -> instanceId={registration.RequestedInstanceId}");
+
+            if (!HostsByInstanceId.ContainsKey(registration.RequestedInstanceId))
+            {
+                await SendErrorAsync(
+                    session.Channel,
+                    ProtocolParticipantIds.Broker,
+                    "HOST_OFFLINE",
+                    $"Host '{registration.RequestedInstanceId}' is not currently connected.",
+                    envelope.MessageId,
+                    cancellationToken);
+            }
+        }
+        else
+        {
+            RemoteSubscriptions.TryRemove(session.ConnectionId, out _);
+        }
+
+        foreach (var host in HostsByInstanceId.Values)
+        {
+            var hostRegistration = new HostRegistrationMessage(
+                host.Registration.InstanceId,
+                host.Registration.HostName,
+                host.Registration.ApplicationVersion,
+                host.Registration.StartedAtUtc,
+                DateTimeOffset.UtcNow,
+                host.Registration.Capabilities);
+
+            var hostEnvelope = ProtocolSerializer.CreateEnvelope(
+                ProtocolMessageTypes.HostRegistration,
+                host.Registration.InstanceId,
+                hostRegistration);
+
+            await session.Channel.SendAsync(hostEnvelope, cancellationToken);
+        }
+
+        LogInfo($"Register remote console: connection={session.ConnectionId}, senderId={envelope.SenderId}");
+    }
+
+    private static async Task BroadcastHostRegistrationAsync(ProtocolEnvelope envelope, CancellationToken cancellationToken)
+    {
+        var remotes = SessionsByConnectionId.Values.Where(s => s.Role == ProtocolClientKind.RemoteConsole).ToList();
+
+        foreach (var remote in remotes)
+        {
+            try
+            {
+                await remote.Channel.SendAsync(envelope, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                LogError($"Failed to broadcast host registration to remote {remote.ConnectionId}: {ex.Message}");
+            }
+        }
+    }
+
+    private static async Task RelayHostToSubscribersAsync(
+        ClientSession hostSession,
+        ProtocolEnvelope envelope,
+        CancellationToken cancellationToken)
+    {
+        if (!BrokerRoutingPolicy.CanPublishHostMessage(hostSession.Role, hostSession.InstanceId))
+        {
+            LogError($"Relay denied: host-only message '{envelope.MessageType}' from unregistered connection {hostSession.ConnectionId}");
+            return;
+        }
+
+        var instanceId = hostSession.InstanceId;
+        if (string.IsNullOrWhiteSpace(instanceId))
+        {
+            LogError($"Relay denied: missing host instance id for connection {hostSession.ConnectionId}");
+            return;
+        }
+
+        var targetRemotes = SessionsByConnectionId.Values
+            .Where(s => RemoteSubscriptions.TryGetValue(s.ConnectionId, out var subscribed)
+                        && BrokerRoutingPolicy.IsSubscribedRemote(s.Role, subscribed, instanceId))
+            .ToList();
+
+        foreach (var remoteSession in targetRemotes)
+        {
+            try
+            {
+                await remoteSession.Channel.SendAsync(envelope, cancellationToken);
+                LogInfo($"Relay: host({instanceId}) -> remote({remoteSession.ConnectionId}) type={envelope.MessageType}");
+            }
+            catch (Exception ex)
+            {
+                LogError($"Relay failure host->remote: host={hostSession.ConnectionId}, remote={remoteSession.ConnectionId}, error={ex.Message}");
+            }
+        }
+    }
+
+    private static async Task RelayRemoteToHostAsync(
+        ClientSession remoteSession,
+        ProtocolEnvelope envelope,
+        CancellationToken cancellationToken)
+    {
+        var request = ProtocolSerializer.DeserializePayload<CommandRequestMessage>(envelope);
+        if (!BrokerRoutingPolicy.CanRelayRemoteCommand(remoteSession.Role, request) || request is null)
+        {
+            await SendErrorAsync(remoteSession.Channel, ProtocolParticipantIds.Broker, "INVALID_COMMAND_REQUEST", "Invalid command request payload.", envelope.MessageId, cancellationToken);
+            return;
+        }
+
+        if (!HostsByInstanceId.TryGetValue(request.TargetInstanceId, out var host))
+        {
+            await SendErrorAsync(
+                remoteSession.Channel,
+                ProtocolParticipantIds.Broker,
+                "HOST_OFFLINE",
+                $"Host '{request.TargetInstanceId}' is not currently connected.",
+                envelope.MessageId,
+                cancellationToken);
+            return;
+        }
+
+        await host.Session.Channel.SendAsync(envelope, cancellationToken);
+        LogInfo($"Relay: remote({remoteSession.ConnectionId}) -> host({request.TargetInstanceId}) type={envelope.MessageType}");
+    }
+
+    private static async Task CleanupConnectionAsync(ClientSession session, CancellationToken cancellationToken)
+    {
+        if (session.Role == ProtocolClientKind.EasySaveHost && !string.IsNullOrWhiteSpace(session.InstanceId))
+        {
+            HostsByInstanceId.TryRemove(session.InstanceId, out _);
+            LogInfo($"Unregister host: instanceId={session.InstanceId}, connection={session.ConnectionId}");
+
+            var impactedRemotes = SessionsByConnectionId.Values
+                .Where(s => RemoteSubscriptions.TryGetValue(s.ConnectionId, out var subscribed)
+                            && BrokerRoutingPolicy.IsSubscribedRemote(s.Role, subscribed, session.InstanceId))
+                .ToList();
+
+            foreach (var remote in impactedRemotes)
+            {
+                try
+                {
+                    await SendErrorAsync(
+                        remote.Channel,
+                        ProtocolParticipantIds.Broker,
+                        "HOST_DISCONNECTED",
+                        $"Host '{session.InstanceId}' disconnected.",
+                        null,
+                        cancellationToken);
+                    LogInfo($"Notify remote {remote.ConnectionId}: host '{session.InstanceId}' disconnected");
+                }
+                catch (Exception ex)
+                {
+                    LogError($"Failed to notify remote {remote.ConnectionId}: {ex.Message}");
+                }
+            }
+        }
+
+        if (session.Role == ProtocolClientKind.RemoteConsole)
+        {
+            RemoteSubscriptions.TryRemove(session.ConnectionId, out _);
+            LogInfo($"Unregister remote console: connection={session.ConnectionId}");
+        }
+    }
+
+    private static async Task SendErrorAsync(
+        ProtocolMessageChannel channel,
+        string senderId,
+        string code,
+        string message,
+        Guid? relatedMessageId,
+        CancellationToken cancellationToken,
+        string? details = null)
+    {
+        var payload = new ErrorMessage(
+            senderId,
+            code,
+            message,
+            DateTimeOffset.UtcNow,
+            details,
+            relatedMessageId?.ToString());
+
+        var envelope = ProtocolSerializer.CreateEnvelope(
+            ProtocolMessageTypes.Error,
+            senderId,
+            payload,
+            correlationId: relatedMessageId);
+
+        await channel.SendAsync(envelope, cancellationToken);
+    }
+
+    private static (IPAddress ipAddress, int port, string routingMode) ParseStartupConfiguration(string[] args)
+    {
+        var fileConfig = ServerConfiguration.Load();
+
+        var ip = GetArgument(args, "--ip")
+                 ?? Environment.GetEnvironmentVariable("EASYSAVE_SERVER_IP")
+                 ?? fileConfig.ServerIp;
+        var portValue = GetArgument(args, "--port")
+                        ?? Environment.GetEnvironmentVariable("EASYSAVE_SERVER_PORT")
+                        ?? fileConfig.ServerPort.ToString();
+        var routingMode = GetArgument(args, "--routing")
+                          ?? Environment.GetEnvironmentVariable("EASYSAVE_SERVER_ROUTING_MODE")
+                          ?? fileConfig.RoutingMode;
+
+        var ipAddress = IPAddress.TryParse(ip, out var parsedIp) ? parsedIp : DefaultIp;
+        var port = int.TryParse(portValue, out var parsedPort) ? parsedPort : DefaultPort;
+        if (port <= 0 || port > 65535)
+            port = DefaultPort;
+
+        return (ipAddress, port, string.IsNullOrWhiteSpace(routingMode) ? "broker" : routingMode.Trim());
+    }
+
+    private static string? GetArgument(string[] args, string key)
+    {
+        for (var i = 0; i < args.Length - 1; i++)
+        {
+            if (string.Equals(args[i], key, StringComparison.OrdinalIgnoreCase))
+            {
+                return args[i + 1];
+            }
+        }
+
+        return null;
+    }
+
+    private static void LogInfo(string message)
+    {
+        Console.WriteLine($"[{DateTimeOffset.UtcNow:O}] [INFO] {message}");
+    }
+
+    private static void LogError(string message)
+    {
+        Console.WriteLine($"[{DateTimeOffset.UtcNow:O}] [ERROR] {message}");
+    }
+
+    private sealed class ClientSession
+    {
+        public ClientSession(Guid connectionId, string endpoint, TcpClient tcpClient)
+        {
+            ConnectionId = connectionId;
+            Endpoint = endpoint;
+            TcpClient = tcpClient;
+            Channel = new ProtocolMessageChannel(tcpClient.GetStream());
+        }
+
+        public Guid ConnectionId { get; }
+        public string Endpoint { get; }
+        public TcpClient TcpClient { get; }
+        public ProtocolMessageChannel Channel { get; }
+
+        public ProtocolClientKind? Role { get; set; }
+        public string? ClientId { get; set; }
+        public string? InstanceId { get; set; }
+    }
+
+    private sealed record HostSession(HostRegistrationMessage Registration, Guid ConnectionId, ClientSession Session);
+
+    private sealed class ServerConfiguration
+    {
+        private const string ConfigFileName = "server.settings.json";
+
+        public string ServerIp { get; init; } = "0.0.0.0";
+        public int ServerPort { get; init; } = DefaultPort;
+        public string RoutingMode { get; init; } = "broker";
+
+        public static ServerConfiguration Load()
+        {
+            var path = Path.Combine(AppContext.BaseDirectory, ConfigFileName);
+            if (!File.Exists(path))
+            {
+                var defaults = new ServerConfiguration();
+                var json = JsonSerializer.Serialize(defaults, new JsonSerializerOptions { WriteIndented = true });
+                File.WriteAllText(path, json);
+                return defaults;
+            }
+
+            try
+            {
+                var json = File.ReadAllText(path);
+                return JsonSerializer.Deserialize<ServerConfiguration>(json) ?? new ServerConfiguration();
+            }
+            catch
+            {
+                return new ServerConfiguration();
+            }
+        }
     }
 }

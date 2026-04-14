@@ -5,6 +5,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using EasySave.Data.Configuration;
 using EasySave.Models.Logger;
+using EasySave.Models.Network;
 using EasySave.ViewModels.Services;
 
 namespace EasySave.ViewModels;
@@ -28,6 +29,7 @@ public partial class MainWindowViewModel : ViewModelBase
     }
 
     private readonly IUiLocalizationService _uiLocalizationService;
+    private readonly IBackupHostCommunicationService _backupHostCommunicationService;
 
     private readonly IUiTextService _uiTextService;
     [ObservableProperty] private ViewScreen _currentScreen = ViewScreen.Main;
@@ -45,7 +47,8 @@ public partial class MainWindowViewModel : ViewModelBase
         _uiLocalizationService = new TlumachUiLocalizationService();
 
         StatusBar = new StatusBarViewModel(_uiTextService);
-        Jobs = new JobsViewModel(StatusBar, _uiTextService);
+        _backupHostCommunicationService = new BackupHostCommunicationService();
+        Jobs = new JobsViewModel(StatusBar, _uiTextService, _backupHostCommunicationService);
         Settings = new SettingsViewModel(StatusBar, _uiTextService, _uiLocalizationService);
         EditBackup = new EditBackupViewModel(StatusBar, _uiTextService);
         BusinessSoftware = new BusinessSoftwareViewModel(
@@ -60,7 +63,9 @@ public partial class MainWindowViewModel : ViewModelBase
         NetworkLog.Instance.OnConnect += OnServerConnection;
         NetworkLog.Instance.OnDisconnect += OnServerDisconnect;
 
-        if (ApplicationConfiguration.Load().RoutingType != RoutingType.Local) NetworkLog.Instance.CreateSocket();
+        _backupHostCommunicationService.Start();
+        if (ApplicationConfiguration.Load().RoutingType != RoutingType.Local)
+            NetworkLog.Instance.CreateSocket();
 
         ApplyConfiguredLocalization();
         BusinessSoftware.Initialize();

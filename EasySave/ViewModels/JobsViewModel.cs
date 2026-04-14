@@ -1,9 +1,12 @@
 using System.Collections.ObjectModel;
+using Avalonia.Threading;
 using Avalonia.Platform.Storage;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using EasySave.Core.Models;
 using EasySave.Models.Backup.Abstractions;
+using EasySave.Models.Network;
+using EasySave.Protocol.Messages;
 using EasySave.Models.Utils;
 using EasySave.ViewModels.Services;
 
@@ -15,7 +18,9 @@ namespace EasySave.ViewModels;
 public partial class JobsViewModel : ViewModelBase
 {
     private readonly IBackupExecutionEngine _backupExecutionEngine;
+    private readonly IBackupHostCommunicationService? _hostCommunicationService;
     private readonly IJobService _jobService;
+    private readonly BackupJobRuntimeRegistry _runtimeRegistry = new();
     private readonly StatusBarViewModel _statusBar;
     private readonly IUiTextService _uiTextService;
     private BackupJobItemViewModel? _pendingDeleteJob;
@@ -57,12 +62,18 @@ public partial class JobsViewModel : ViewModelBase
     /// </summary>
     /// <param name="statusBar">Shared status bar state.</param>
     /// <param name="uiTextService">Localized UI text service.</param>
-    public JobsViewModel(StatusBarViewModel statusBar, IUiTextService uiTextService)
+    public JobsViewModel(
+        StatusBarViewModel statusBar,
+        IUiTextService uiTextService,
+        IBackupHostCommunicationService? hostCommunicationService = null)
     {
         _backupExecutionEngine = new BackupExecutionEngine();
         _jobService = new JobService();
         _uiTextService = uiTextService ?? throw new ArgumentNullException(nameof(uiTextService));
         _statusBar = statusBar ?? throw new ArgumentNullException(nameof(statusBar));
+        _hostCommunicationService = hostCommunicationService;
+        if (_hostCommunicationService != null)
+            _hostCommunicationService.RemoteCommandReceived += OnRemoteCommandReceivedAsync;
 
         InitializeBackupTypes();
         RefreshJobs();
@@ -108,6 +119,9 @@ public partial class JobsViewModel : ViewModelBase
         SelectedJob = selectedJobId.HasValue
             ? Jobs.FirstOrDefault(item => item.Job.Id == selectedJobId.Value)
             : null;
+
+        _runtimeRegistry.RegisterJobs(Jobs);
+        _hostCommunicationService?.PublishJobCatalog(_runtimeRegistry.SnapshotJobs());
     }
 
     /// <summary>
@@ -420,12 +434,23 @@ public partial class JobsViewModel : ViewModelBase
 
         _statusBar.StatusMessage = _uiTextService.Format("Launch.RunningOne", "Running job {0} - {1}...", job.Id,
             job.Name);
+        _hostCommunicationService?.PublishJobLifecycle(job, RemoteJobStatus.Running, "Job execution started.");
 
         var progress = new Progress<BackupExecutionProgressSnapshot>(snapshot =>
         {
             _statusBar.ReportJobProgress(snapshot);
+            _hostCommunicationService?.PublishProgress(job, snapshot, ResolveRemoteStatus(job));
         });
-        var result = await _backupExecutionEngine.ExecuteJobAsync(job, progress);
+        BackupExecutionResult result;
+        try
+        {
+            result = await _backupExecutionEngine.ExecuteJobAsync(job, progress);
+        }
+        catch (Exception ex)
+        {
+            _hostCommunicationService?.PublishJobLifecycle(job, RemoteJobStatus.Failed, ex.Message);
+            throw;
+        }
 
         _statusBar.UnregisterJob(job.Id);
 
@@ -433,11 +458,14 @@ public partial class JobsViewModel : ViewModelBase
         {
             _statusBar.StatusMessage = _uiTextService.Format("Gui.Status.BackupAsFinished",
                 "Backup '{0}' finished.", job.Name);
+            _hostCommunicationService?.PublishJobLifecycle(job, ResolveRemoteStatus(job), "Job execution ended.");
             return false;
         }
 
         _statusBar.StatusMessage = _uiTextService.Format("Gui.Status.BackupStoppedByBusinessSoftware",
             "Backup '{0}' stopped: business software is running", job.Name);
+        _hostCommunicationService?.PublishJobLifecycle(job, RemoteJobStatus.Paused,
+            "Job paused by business software.");
         return true;
     }
 
@@ -470,7 +498,75 @@ public partial class JobsViewModel : ViewModelBase
     /// <returns>Configured item ViewModel.</returns>
     private BackupJobItemViewModel CreateJobItem(BackupJob job)
     {
-        return new BackupJobItemViewModel(job, _uiTextService, RunJobFromItemAsync, RequestEditFromItem, RequestDeleteFromItem);
+        var item = new BackupJobItemViewModel(job, _uiTextService, RunJobFromItemAsync, RequestEditFromItem,
+            RequestDeleteFromItem);
+
+        job.PauseEvent += (_, _) => _hostCommunicationService?.PublishJobLifecycle(job, ResolveRemoteStatus(job));
+        job.StopEvent += (_, _) => _hostCommunicationService?.PublishJobLifecycle(job, ResolveRemoteStatus(job));
+        job.EndEvent += (_, _) => _hostCommunicationService?.PublishJobLifecycle(job, ResolveRemoteStatus(job));
+        job.BusinessSoftwarePauseChanged += (_, _) =>
+            _hostCommunicationService?.PublishJobLifecycle(job, ResolveRemoteStatus(job));
+
+        return item;
+    }
+
+    private async Task<CommandResultMessage> OnRemoteCommandReceivedAsync(CommandRequestMessage request)
+    {
+        if (!_runtimeRegistry.TryGetJobItem(request.JobId, out var jobItem) || jobItem == null)
+            return BuildCommandResult(request, CommandResultStatus.Rejected, "Job not found on host.");
+
+        var job = jobItem.Job;
+
+        if (request.Command == CommandType.Pause && (job.WasStopped || job.IsPaused()))
+            return BuildCommandResult(request, CommandResultStatus.Rejected,
+                job.IsPaused() ? "Job is already paused." : "Cannot pause: job is not running.");
+        if (request.Command == CommandType.Resume && !job.IsPaused())
+            return BuildCommandResult(request, CommandResultStatus.Rejected, "Cannot resume: job is not paused.");
+        if (request.Command == CommandType.Stop && job.WasStopped)
+            return BuildCommandResult(request, CommandResultStatus.Rejected, "Cannot stop: job is not running.");
+        if (request.Command == CommandType.Start && !job.WasStopped && !job.IsPaused() &&
+            job.CurrentProgress > 0 && job.CurrentProgress < 100)
+            return BuildCommandResult(request, CommandResultStatus.Rejected, "Cannot start: job is already running.");
+
+        try
+        {
+            var dispatched = await RemoteCommandDispatcher.DispatchAsync(
+                request.Command,
+                pause: async () => await Dispatcher.UIThread.InvokeAsync(jobItem.PauseForRemoteCommand),
+                resume: async () => await Dispatcher.UIThread.InvokeAsync(jobItem.ResumeForRemoteCommand),
+                stop: async () => await Dispatcher.UIThread.InvokeAsync(jobItem.StopForRemoteCommand),
+                startAsync: () => Task.Run(jobItem.StartForRemoteCommandAsync));
+
+            if (!dispatched)
+                return BuildCommandResult(request, CommandResultStatus.Rejected, "Unsupported command.");
+        }
+        catch (Exception ex)
+        {
+            return BuildCommandResult(request, CommandResultStatus.Failed, $"Command failed: {ex.Message}");
+        }
+
+        return BuildCommandResult(request, CommandResultStatus.Executed, "Command applied on host.");
+    }
+
+    private static RemoteJobStatus ResolveRemoteStatus(BackupJob job)
+    {
+        return BackupHostCommunicationService.ResolveStatus(job);
+    }
+
+    private static CommandResultMessage BuildCommandResult(
+        CommandRequestMessage request,
+        CommandResultStatus status,
+        string message)
+    {
+        return new CommandResultMessage(
+            request.RequestId,
+            request.TargetInstanceId,
+            request.JobId,
+            request.JobName,
+            request.Command,
+            status,
+            DateTimeOffset.UtcNow,
+            message);
     }
 
     /// <summary>
@@ -546,4 +642,3 @@ public partial class JobsViewModel : ViewModelBase
                left.Type == right.Type;
     }
 }
-

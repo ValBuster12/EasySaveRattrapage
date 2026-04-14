@@ -226,6 +226,39 @@ public sealed partial class BackupJobItemViewModel : ViewModelBase
         }
     }
 
+    public void PauseForRemoteCommand()
+    {
+        if (!Paused)
+            PauseResumeJob();
+    }
+
+    public void ResumeForRemoteCommand()
+    {
+        if (Paused)
+            PauseResumeJob();
+    }
+
+    public void StopForRemoteCommand()
+    {
+        if (!Stopped)
+            StartStopJob();
+    }
+
+    public Task StartForRemoteCommandAsync()
+    {
+        if (Paused)
+            return Task.CompletedTask;
+
+        var isActivelyRunning = !Stopped && Job.CurrentProgress > 0 && Job.CurrentProgress < 100;
+        if (isActivelyRunning)
+            return Task.CompletedTask;
+
+        if (_executeJobCallback != null)
+            return _executeJobCallback(Job);
+
+        return Task.Run(() => Job.StartBackup());
+    }
+
     /// <summary>
     ///     Command to start or stop the backup job.
     /// </summary>

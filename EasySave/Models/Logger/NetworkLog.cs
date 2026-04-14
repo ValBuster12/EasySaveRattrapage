@@ -1,146 +1,281 @@
-using System;
 using System.Net;
 using System.Net.Sockets;
-using System.Text;
 using System.Text.Json;
 using EasySave.Data.Configuration;
+using EasySave.Protocol.Messages;
+using EasySave.Protocol.Transport;
 
 namespace EasySave.Models.Logger;
 
 /// <summary>
-///     Singleton class for logging over a network using TCP.
+///     Singleton TCP client used by EasySave to communicate with the central server.
+///     Supports legacy write-only log frames and bidirectional protocol envelopes.
 /// </summary>
 public sealed class NetworkLog
 {
-    // Lazy initialization for the singleton instance
-    private static readonly Lazy<NetworkLog> instance = new(() => new NetworkLog());
-    private IPEndPoint? _endpoint; // Endpoint for sending logs
+    private static readonly Lazy<NetworkLog> InstanceFactory = new(() => new NetworkLog());
 
-    private TcpClient? _tcpClient; // TCP client for sending log messages
-    public EventHandler? OnConnect; // Event triggered when the connection is established
-    public EventHandler? OnDisconnect; // Event triggered when the connection is lost
+    private readonly JsonSerializerOptions _jsonOptions = new()
+    {
+        WriteIndented = false
+    };
 
-    /// <summary>
-    ///     Private constructor to prevent direct instantiation.
-    ///     Socket creation is deferred to an explicit <see cref="CreateSocket"/> call
-    ///     so that callers can subscribe to <see cref="OnConnect"/>/<see cref="OnDisconnect"/>
-    ///     before the connection is attempted.
-    /// </summary>
+    private readonly object _sync = new();
+    private readonly object _sendSync = new();
+    private ProtocolMessageChannel? _channel;
+    private bool _manualClose;
+    private CancellationTokenSource? _reconnectCts;
+    private Task? _reconnectTask;
+    private CancellationTokenSource? _receiveLoopCts;
+    private Task? _receiveLoopTask;
+    private TcpClient? _tcpClient;
+
     private NetworkLog()
     {
     }
 
-    /// <summary>
-    ///     Gets the singleton instance of the NetworkLog class.
-    /// </summary>
-    public static NetworkLog Instance => instance.Value;
+    public static NetworkLog Instance => InstanceFactory.Value;
 
-    /// <summary>
-    ///     Creates a TCP socket for logging.
-    /// </summary>
-    public void CreateSocket()
+    public event EventHandler? OnConnect;
+    public event EventHandler? OnDisconnect;
+    public event EventHandler<ProtocolEnvelope>? OnEnvelopeReceived;
+
+    public bool IsConnected
     {
-        lock (this) // Ensure thread safety
+        get
         {
-            CloseSocket(); // Ensure any existing socket is closed
-
-            try
+            lock (_sync)
             {
-                // Load the server IP and port from the application configuration
-                _endpoint = new IPEndPoint(
-                    IPAddress.Parse(ApplicationConfiguration.Load().EasySaveServerIp),
-                    ApplicationConfiguration.Load().EasySaveServerPort);
-
-                _tcpClient = new TcpClient(); // Instantiate the TCP client
-                _tcpClient.Connect(_endpoint); // Establish the TCP connection
-                OnConnectEvent(); // Trigger the connect event
-                
-                Console.WriteLine("Socket created and ready to use.");
-            }
-            catch (Exception e)
-            {
-                Console.WriteLine($"Error creating socket: {e.Message}");
-                OnDisconnectEvent(); // Trigger the disconnect event on error
+                return _tcpClient is { Connected: true };
             }
         }
     }
 
-    /// <summary>
-    ///     Closes the TCP socket if it is open.
-    /// </summary>
+    public void CreateSocket()
+    {
+        _manualClose = false;
+        lock (_sync)
+        {
+            CloseSocketCore(raiseDisconnect: false);
+
+            try
+            {
+                var config = ApplicationConfiguration.Load();
+                var endpoint = new IPEndPoint(IPAddress.Parse(config.EasySaveServerIp), config.EasySaveServerPort);
+
+                _tcpClient = new TcpClient();
+                _tcpClient.Connect(endpoint);
+
+                _channel = new ProtocolMessageChannel(_tcpClient.GetStream());
+                _receiveLoopCts = new CancellationTokenSource();
+                _receiveLoopTask = Task.Run(() => ReceiveLoopAsync(_receiveLoopCts.Token));
+                CancelReconnectLoop();
+
+                OnConnect?.Invoke(this, EventArgs.Empty);
+                Console.WriteLine("Socket created and ready to use.");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error creating socket: {ex.Message}");
+                CloseSocketCore(raiseDisconnect: true);
+                StartReconnectLoop();
+            }
+        }
+    }
+
     public void CloseSocket()
     {
+        _manualClose = true;
+        lock (_sync)
+        {
+            CancelReconnectLoop();
+            CloseSocketCore(raiseDisconnect: true);
+        }
+    }
+
+    public void Log<T>(T message)
+    {
+        ArgumentNullException.ThrowIfNull(message);
+
+        var frame = JsonSerializer.Serialize(message, _jsonOptions);
         try
         {
-            if (_tcpClient != null)
-            {
-                _tcpClient.Close(); // Close the socket
-                _tcpClient = null; // Clear the reference
-                Console.WriteLine("Socket closed.");
-            }
+            SendRawFrame(frame);
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Error when closing socket: {ex.Message}");
+            Console.WriteLine(ex.Message);
+            CreateSocket();
         }
     }
 
-    private readonly JsonSerializerOptions _options = new JsonSerializerOptions
+    public void SendEnvelope(ProtocolEnvelope envelope)
     {
-        WriteIndented = false // No indentation for compact messages
-    };
-    
-    /// <summary>
-    ///     Sends a log message to the defined endpoint.
-    /// </summary>
-    /// <typeparam name="T">The type of the message to log.</typeparam>
-    /// <param name="message">The message to be sent as a log.</param>
-    public void Log<T>(T message)
-    {
-        lock (this) // Ensure thread safety
-        {
-            // Serialize the message to JSON and convert it to byte array
-            var data = Encoding.ASCII.GetBytes(JsonSerializer.Serialize(message, _options));
+        ArgumentNullException.ThrowIfNull(envelope);
 
+        try
+        {
+            SendEnvelopeCore(envelope);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error sending protocol envelope: {ex.Message}");
+            CreateSocket();
+        }
+    }
+
+    private void SendEnvelopeCore(ProtocolEnvelope envelope)
+    {
+        lock (_sendSync)
+        {
+            ProtocolMessageChannel? channel;
+            lock (_sync)
+            {
+                channel = _channel;
+            }
+
+            if (channel == null)
+                throw new InvalidOperationException("TCP client is not connected.");
+
+            channel.SendAsync(envelope).GetAwaiter().GetResult();
+        }
+    }
+
+    private void SendRawFrame(string frame)
+    {
+        lock (_sendSync)
+        {
+            TcpClient? tcpClient;
+            lock (_sync)
+            {
+                tcpClient = _tcpClient;
+            }
+
+            if (tcpClient is not { Connected: true })
+                throw new InvalidOperationException("TCP client is not connected.");
+
+            var stream = tcpClient.GetStream();
+            LengthPrefixedMessageFraming.WriteFrameAsync(stream, frame).GetAwaiter().GetResult();
+        }
+    }
+
+    private async Task ReceiveLoopAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                ProtocolMessageChannel? channel;
+                lock (_sync)
+                {
+                    channel = _channel;
+                }
+
+                if (channel == null)
+                    return;
+
+                var envelope = await channel.ReceiveAsync(cancellationToken);
+                if (envelope == null)
+                    break;
+
+                OnEnvelopeReceived?.Invoke(this, envelope);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Expected when connection is intentionally closed.
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Socket receive loop stopped: {ex.Message}");
+        }
+        finally
+        {
+            lock (_sync)
+            {
+                CloseSocketCore(raiseDisconnect: true);
+            }
+
+            StartReconnectLoop();
+        }
+    }
+
+    private void StartReconnectLoop()
+    {
+        if (_manualClose || ApplicationConfiguration.Load().RoutingType == RoutingType.Local)
+            return;
+
+        lock (_sync)
+        {
+            if (_reconnectTask is { IsCompleted: false })
+                return;
+
+            _reconnectCts?.Dispose();
+            _reconnectCts = new CancellationTokenSource();
+            var token = _reconnectCts.Token;
+
+            _reconnectTask = Task.Run(async () =>
+            {
+                while (!token.IsCancellationRequested)
+                {
+                    try
+                    {
+                        await Task.Delay(TimeSpan.FromSeconds(3), token);
+                        if (IsConnected)
+                            return;
+
+                        CreateSocket();
+                        if (IsConnected)
+                            return;
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        return;
+                    }
+                    catch
+                    {
+                        // Keep retrying until cancellation.
+                    }
+                }
+            }, token);
+        }
+    }
+
+    private void CancelReconnectLoop()
+    {
+        _reconnectCts?.Cancel();
+        _reconnectCts?.Dispose();
+        _reconnectCts = null;
+        _reconnectTask = null;
+    }
+
+    private void CloseSocketCore(bool raiseDisconnect)
+    {
+        _receiveLoopCts?.Cancel();
+        _receiveLoopCts?.Dispose();
+        _receiveLoopCts = null;
+        _receiveLoopTask = null;
+
+        _channel = null;
+
+        if (_tcpClient != null)
+        {
             try
             {
-                if (_tcpClient is { Connected: true })
-                {
-                    NetworkStream stream = _tcpClient.GetStream();
-                    // Send the length of the data first
-                    var lengthBytes = BitConverter.GetBytes(data.Length);
-                    stream.Write(lengthBytes, 0, lengthBytes.Length); // Send length (4 bytes)
-            
-                    // Then send the actual data
-                    stream.Write(data, 0, data.Length); // Send log entry data
-                }
-                else
-                {
-                    throw new InvalidOperationException("TCP client is not connected.");
-                }
+                _tcpClient.Close();
+                Console.WriteLine("Socket closed.");
             }
-            catch (Exception e)
+            catch (Exception ex)
             {
-                Console.WriteLine(e.Message);
-                // On failure to send, attempt to recreate the socket
-                CreateSocket();
+                Console.WriteLine($"Error when closing socket: {ex.Message}");
+            }
+            finally
+            {
+                _tcpClient = null;
             }
         }
-    }
 
-    /// <summary>
-    ///     Raises the OnDisconnect event.
-    /// </summary>
-    private void OnDisconnectEvent()
-    {
-        OnDisconnect?.Invoke(this, EventArgs.Empty);
-    }
-
-    /// <summary>
-    ///     Raises the OnConnect event.
-    /// </summary>
-    private void OnConnectEvent()
-    {
-        OnConnect?.Invoke(this, EventArgs.Empty);
+        if (raiseDisconnect)
+            OnDisconnect?.Invoke(this, EventArgs.Empty);
     }
 }
